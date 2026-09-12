@@ -24,8 +24,8 @@ knitr::opts_chunk$set(eval = FALSE, echo = TRUE)
 # Ziel
 
 Dieses Dokument beschreibt die Verwaltung der Dynamics 365 Lizenzen über Azure
-AD Sicherheitsgruppen, den Export der Gruppenmitglieder sowie die
-Konsolidierung der Exportdaten mittels R.
+AD Sicherheitsgruppen, den Export der Gruppenmitglieder, die Zuordnung zu den
+tatsächlichen Lizenz-SKUs sowie die Konsolidierung der Exportdaten mittels R.
 
 ---
 
@@ -36,18 +36,23 @@ Die Lizenzvergabe für Dynamics 365 Finance & Supply Chain Management erfolgt
 
 Jede Sicherheitsgruppe ist mit einer entsprechenden Lizenzkonfiguration in
 Entra ID verknüpft. Sobald ein Benutzer einer Gruppe hinzugefügt wird, erhält
-er automatisch die zugehörigen Dynamics 365 Lizenzen.
+er automatisch die zugehörigen Dynamics 365 Lizenz-SKUs.
 
 ## Verwendete Sicherheitsgruppen
 
-| Sicherheitsgruppe | Lizenzzuordnung |
-|--------------------|------------------|
-| `AAD_LIC_D365-FI` | Dynamics 365 Finance Base License |
-| `AAD_LIC_D365-SCM` | Dynamics 365 Supply Chain Management Base License |
-| `AAD_LIC_D365-FI-ATTACH` | SCM Base + Finance Attach License |
-| `AAD_LIC_D365-SCM-ATTACH` | Finance Base + SCM Attach License |
-| `AAD_LIC_D365-TEAM` | Team Member License |
-| `AAD_LIC_D365-ACTIVITY` | Activity License |
+| Sicherheitsgruppe | Lizenzzuordnung (SKU) |
+|--------------------|------------------------|
+| `AAD_LIC_D365-FI` | Finance Base |
+| `AAD_LIC_D365-SCM` | SCM Base |
+| `AAD_LIC_D365-FI-ATTACH` | SCM Base + Finance Attached |
+| `AAD_LIC_D365-SCM-ATTACH` | Finance Base + SCM Attached |
+| `AAD_LIC_D365-TEAM` | Team Member |
+| `AAD_LIC_D365-ACTIVITY` | Activity |
+
+Die kurzen SKU-Bezeichnungen (`Finance Base`, `SCM Base`, `Finance Attached`,
+`SCM Attached`, `Team Member`, `Activity`) sind dieselben, die in der
+Mapping-Datei `LicenseGroups.xlsx` (siehe unten) verwendet werden — so bleibt
+die Benennung über Dokumentation, Mapping-Datei und R-Auswertung konsistent.
 
 ---
 
@@ -57,39 +62,39 @@ er automatisch die zugehörigen Dynamics 365 Lizenzen.
 
 Benutzer dieser Gruppe erhalten **ausschließlich**:
 
-- Dynamics 365 Finance Base License
+- Finance Base
 
 ## AAD_LIC_D365-SCM
 
 Benutzer dieser Gruppe erhalten **ausschließlich**:
 
-- Dynamics 365 SCM Base License
+- SCM Base
 
 ## AAD_LIC_D365-FI-ATTACH
 
 Benutzer dieser Gruppe erhalten:
 
-- Dynamics 365 SCM Base License
-- Dynamics 365 Finance Attach License
+- SCM Base
+- Finance Attached
 
 ## AAD_LIC_D365-SCM-ATTACH
 
 Benutzer dieser Gruppe erhalten:
 
-- Dynamics 365 Finance Base License
-- Dynamics 365 SCM Attach License
+- Finance Base
+- SCM Attached
 
 ## AAD_LIC_D365-TEAM
 
 Benutzer dieser Gruppe erhalten:
 
-- Dynamics 365 Team Member License
+- Team Member
 
 ## AAD_LIC_D365-ACTIVITY
 
 Benutzer dieser Gruppe erhalten:
 
-- Dynamics 365 Activity License
+- Activity
 
 ---
 
@@ -126,10 +131,8 @@ exportGroupMembers_2026-09-11_AAD_LIC_D365-ACTIVITY.csv
 Alle Exportdateien werden in einem gemeinsamen Verzeichnis **innerhalb des
 Projekts** gespeichert (`data/D365LicenseExport/` unter dem Projektstamm).
 Das Verzeichnis wird beim Ausführen des R-Skripts automatisch angelegt, falls
-es noch nicht existiert (siehe `dir.create()` im Abschnitt „Verzeichnis
+es noch nicht existiert (siehe `dir.create()` im Abschnitt „Arbeitsverzeichnis
 definieren").
-
-Beispiel:
 
 ```text
 D365Licensing\data\D365LicenseExport\
@@ -139,6 +142,25 @@ D365Licensing\data\D365LicenseExport\
 ├── exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM-ATTACH.csv
 ├── exportGroupMembers_2026-09-11_AAD_LIC_D365-TEAM.csv
 └── exportGroupMembers_2026-09-11_AAD_LIC_D365-ACTIVITY.csv
+```
+
+## Konfigurationsdateien (Mapping + Preise)
+
+Zusätzlich zu den Rohexporten werden zwei Konfigurationsdateien benötigt:
+
+- `LicenseGroups.xlsx` — Zuordnung der Azure AD Gruppen zu den tatsächlichen
+  Dynamics-Lizenz-SKUs.
+- `skuPrices.xlsx` — Kosten je SKU (z. B. der monatliche Preis pro Lizenz).
+
+Im Unterschied zu den Gruppenexporten sind das **keine Rohdaten-Exporte**,
+sondern gepflegte Fachlogik (welche Gruppe steht für welche SKU, was kostet
+welche SKU) — sie liegen deshalb **im Repository unter `inst/config/`** statt
+im (git-ignorierten) Exportverzeichnis, damit Änderungen nachvollziehbar
+versioniert werden:
+
+```text
+D365Licensing\inst\config\LicenseGroups.xlsx
+D365Licensing\inst\config\skuPrices.xlsx
 ```
 
 ---
@@ -152,31 +174,39 @@ Die CSV-Dateien sollen:
 1. automatisch eingelesen werden
 2. zu einer Gesamttabelle zusammengeführt werden
 3. um eine zusätzliche Spalte `LicenseGroup` erweitert werden
-4. als einzelne Ausgabedatei bereitgestellt werden
+4. über die Mapping-Datei den tatsächlichen Lizenz-SKUs zugeordnet werden
+5. über die Preistabelle mit den Lizenzkosten verknüpft werden
+6. als Gesamt-, Benutzer- und Kostenübersicht bereitgestellt werden — **als
+   Excel-Dateien**, nicht als CSV
 
 ## Benötigte Pakete
 
 ```{r install-packages}
-install.packages("tidyverse")
+install.packages(c("tidyverse", "readxl", "writexl"))
 ```
 
 ## Bibliotheken laden
 
 ```{r libraries}
 library(tidyverse)
+library(readxl)
+library(writexl)
 ```
 
-## Verzeichnis definieren
+## Arbeitsverzeichnis definieren
 
 `export_path` liegt **innerhalb des Projekts** (`D365Licensing/data/`), statt
-auf einem festen Laufwerksbuchstaben – so funktioniert das Playbook auf jedem
-Rechner, auf dem das Projekt ausgecheckt ist. `dir.create()` legt das
-Verzeichnis an, falls es noch nicht existiert (z. B. beim allerersten Lauf,
-bevor die ersten Entra-ID-Exporte dort abgelegt wurden).
+auf einem festen Laufwerksbuchstaben oder einem anderen Benutzerprofil – so
+funktioniert das Playbook auf jedem Rechner, auf dem das Projekt ausgecheckt
+ist. `config_path` zeigt auf die versionierte Mapping-Datei. `dir.create()`
+legt das Exportverzeichnis an, falls es noch nicht existiert (z. B. beim
+allerersten Lauf, bevor die ersten Entra-ID-Exporte dort abgelegt wurden).
 
-```{r export-path}
+```{r paths}
 export_path <- "C:/Users/Cedric/Documents/RProjects/D365Licensing/data/D365LicenseExport/"
 dir.create(export_path, showWarnings = FALSE, recursive = TRUE)
+
+config_path <- "C:/Users/Cedric/Documents/RProjects/D365Licensing/inst/config/"
 ```
 
 ## CSV-Dateien einlesen und zusammenführen
@@ -184,7 +214,7 @@ dir.create(export_path, showWarnings = FALSE, recursive = TRUE)
 ```{r consolidate}
 files <- list.files(
   export_path,
-  pattern   = "\\.csv$",
+  pattern    = "\\.csv$",
   full.names = TRUE
 )
 
@@ -211,41 +241,143 @@ dplyr::glimpse(license_members)
 dplyr::count(license_members, LicenseGroup)
 ```
 
----
+## Export Rohdaten
 
-# Export der Gesamttabelle
+Alle von diesem Skript erzeugten Ausgabedateien sind **Excel-Dateien
+(`.xlsx`)**, keine CSV — auch die Rohdaten-Ablage.
 
-```{r export-all}
-readr::write_csv(
-  license_members,
-  file.path(export_path, "D365_All_License_Assignments.csv")
+```{r export-raw}
+writexl::write_xlsx(
+  list(group_members = license_members),
+  file.path(export_path, "D365_All_License_Assignments.xlsx")
 )
 ```
 
----
+## Lizenz-Mapping laden
 
-# Erweiterte Analyse
+Die Datei `LicenseGroups.xlsx` enthält die Zuordnung zwischen Sicherheitsgruppen
+und den tatsächlich vergebenen Lizenz-SKUs — **eine Zeile je Gruppe + SKU**.
+Gruppen mit zwei Lizenzen (`*-ATTACH`) erscheinen entsprechend zweimal.
 
-Da Benutzer in mehreren Gruppen vorkommen können, empfiehlt sich zusätzlich
-eine Übersicht der Gruppen pro Benutzer.
+```{r load-mapping}
+license_sku <- readxl::read_excel(
+  file.path(config_path, "LicenseGroups.xlsx")
+)
+```
 
-## Benutzer je Lizenzgruppe
+Beispiel-Inhalt:
 
-```{r overview}
-license_overview <- license_members |>
-  dplyr::group_by(userPrincipalName) |>
-  dplyr::summarise(
-    LicenseGroups = paste(sort(unique(LicenseGroup)), collapse = "; "),
-    .groups = "drop"
+| LicenseGroups | SKU |
+|---------------|-----|
+| `AAD_LIC_D365-FI` | Finance Base |
+| `AAD_LIC_D365-SCM` | SCM Base |
+| `AAD_LIC_D365-FI-ATTACH` | SCM Base |
+| `AAD_LIC_D365-FI-ATTACH` | Finance Attached |
+| `AAD_LIC_D365-SCM-ATTACH` | Finance Base |
+| `AAD_LIC_D365-SCM-ATTACH` | SCM Attached |
+| `AAD_LIC_D365-TEAM` | Team Member |
+| `AAD_LIC_D365-ACTIVITY` | Activity |
+
+## Ermittlung der tatsächlichen Lizenz-SKUs
+
+Der Join ist bewusst `many-to-many`: eine `*-ATTACH`-Gruppe liefert zwei
+SKU-Zeilen je Benutzer.
+
+```{r resolve-skus}
+license_detailed <- license_members |>
+  dplyr::left_join(
+    license_sku,
+    by           = c("LicenseGroup" = "LicenseGroups"),
+    relationship = "many-to-many"
   )
 ```
 
-## Export der Benutzerübersicht
+## Lizenzkosten laden
 
-```{r export-overview}
-readr::write_csv(
-  license_overview,
-  file.path(export_path, "D365_User_License_Overview.csv")
+Die Datei `skuPrices.xlsx` enthält die Kosten je SKU (z. B. den monatlichen
+Preis pro Lizenz) — **eine Zeile je SKU**. Sie wird genauso geladen wie
+`LicenseGroups.xlsx`.
+
+```{r load-prices}
+sku_Prices <- readxl::read_excel(
+  file.path(config_path, "skuPrices.xlsx")
+)
+```
+
+Beispiel-Inhalt (Platzhalterwerte — durch die tatsächlichen Preise aus dem
+Lizenzvertrag ersetzen):
+
+| SKU | MonthlyPriceEUR |
+|-----|-----------------|
+| Finance Base | 180 |
+| SCM Base | 180 |
+| Finance Attached | 30 |
+| SCM Attached | 30 |
+| Team Member | 8 |
+| Activity | 3 |
+
+## Kosten je Zuweisung ermitteln
+
+```{r resolve-costs}
+license_costs <- license_detailed |>
+  dplyr::left_join(sku_Prices, by = "SKU")
+```
+
+## Benutzerübersicht erzeugen
+
+Für jeden Benutzer werden sämtliche Lizenzgruppen, die zugehörigen SKUs und
+die daraus resultierenden monatlichen Gesamtkosten zusammengefasst.
+
+```{r overview}
+license_overview <- license_costs |>
+  dplyr::group_by(userPrincipalName) |>
+  dplyr::summarise(
+    LicenseGroups    = paste(sort(unique(LicenseGroup)), collapse = "; "),
+    SKUs             = paste(sort(unique(SKU)),          collapse = "; "),
+    TotalMonthlyCost = sum(MonthlyPriceEUR, na.rm = TRUE),
+    .groups          = "drop"
+  )
+```
+
+## Qualitätskontrolle
+
+Verteilung der SKU-Kombinationen über alle Benutzer — auffällige oder
+unerwartete Kombinationen sind ein Hinweis auf Gruppenzuordnungen, die geprüft
+werden sollten.
+
+```{r quality-check}
+license_overview |>
+  dplyr::count(SKUs, sort = TRUE)
+```
+
+## Kosten je SKU (Kostentreiber)
+
+Zeigt, wie viele Benutzer je SKU lizenziert sind und welche Gesamtkosten daraus
+entstehen — die eigentliche Antwort auf "welche Lizenz verursacht wie viele
+Kosten".
+
+```{r cost-by-sku}
+cost_by_sku <- license_costs |>
+  dplyr::count(SKU, name = "Anzahl") |>
+  dplyr::left_join(sku_Prices, by = "SKU") |>
+  dplyr::mutate(TotalMonthlyCostEUR = Anzahl * MonthlyPriceEUR) |>
+  dplyr::arrange(dplyr::desc(TotalMonthlyCostEUR))
+
+cat("Monatliche Gesamtkosten aller Lizenzen:",
+    sum(cost_by_sku$TotalMonthlyCostEUR, na.rm = TRUE), "EUR\n")
+```
+
+## Export der Ergebnisse
+
+```{r export-results}
+writexl::write_xlsx(
+  list(
+    group_members    = license_members,
+    license_detailed = license_detailed,
+    user_overview    = license_overview,
+    cost_by_sku      = cost_by_sku
+  ),
+  file.path(export_path, "D365_User_License_Overview.xlsx")
 )
 ```
 
@@ -253,23 +385,51 @@ readr::write_csv(
 
 # Ergebnis
 
-Nach Ausführung des Skripts stehen zwei Dateien zur Verfügung:
+Nach Ausführung des Skripts stehen zwei **Excel-Dateien** zur Verfügung (keine
+CSV):
 
-## D365_All_License_Assignments.csv
+## D365_All_License_Assignments.xlsx
 
-Enthält:
+Enthält (Arbeitsblatt `group_members`):
 
 - alle exportierten Gruppenmitglieder
 - alle Originalspalten aus Entra ID
 - zusätzliche Spalte `LicenseGroup`
 
-## D365_User_License_Overview.csv
+## D365_User_License_Overview.xlsx
+
+### Arbeitsblatt: group_members
+
+Enthält die Rohdaten aus den exportierten Azure AD Gruppen (identisch zu
+`D365_All_License_Assignments.xlsx`).
+
+### Arbeitsblatt: license_detailed
+
+Enthält je Zeile:
+
+- Benutzer
+- Lizenzgruppe
+- tatsächlich zugeordnete SKU
+
+### Arbeitsblatt: user_overview
 
 Enthält:
 
 - jeden Benutzer genau einmal
-- sämtliche Lizenzgruppen des Benutzers
+- sämtliche zugewiesenen Lizenzgruppen
+- sämtliche zugewiesenen Lizenz-SKUs
+- monatliche Gesamtkosten (`TotalMonthlyCost`)
 - ideale Grundlage für Lizenz-Audits und Compliance-Prüfungen
+
+### Arbeitsblatt: cost_by_sku
+
+Enthält je SKU:
+
+- Anzahl lizenzierter Benutzer
+- Preis je Lizenz (aus `skuPrices.xlsx`)
+- monatliche Gesamtkosten dieser SKU über alle Benutzer
+
+— zeigt auf einen Blick, welche Lizenz die höchsten Kosten verursacht.
 
 ---
 
@@ -278,11 +438,14 @@ Enthält:
 Empfohlener Ablauf:
 
 1. „Members" jeder Lizenzgruppe aus Entra ID exportieren
-2. Dateien im Exportverzeichnis `data/D365LicenseExport/` ablegen (wird bei
-   Bedarf automatisch angelegt)
-3. R-Skript ausführen
-4. Konsolidierte Dateien erzeugen
-5. Lizenzzuordnungen prüfen und korrigieren
+2. CSV-Dateien im Exportverzeichnis `data/D365LicenseExport/` ablegen (wird
+   bei Bedarf automatisch angelegt)
+3. `LicenseGroups.xlsx` und `skuPrices.xlsx` in `inst/config/` aktuell halten,
+   falls sich Gruppe-zu-SKU-Zuordnung oder Lizenzpreise ändern
+4. R-Skript ausführen
+5. Konsolidierte Excel-Dateien erzeugen
+6. Lizenzzuordnungen, Kosten und Qualitätskontrolle prüfen, Auffälligkeiten
+   korrigieren
 
 ---
 
@@ -291,3 +454,5 @@ Empfohlener Ablauf:
 | Version | Datum | Beschreibung |
 |---------|------------|--------------|
 | 1.0 | 11.09.2026 | Initiale Erstellung des Playbooks |
+| 1.1 | 12.09.2026 | Lizenz-Mapping (`LicenseGroups.xlsx`) und Ermittlung der tatsächlichen SKUs ergänzt |
+| 1.2 | 12.09.2026 | Lizenzkosten (`skuPrices.xlsx`, `cost_by_sku`) ergänzt; alle Ausgabedateien von CSV auf Excel (`.xlsx`) umgestellt |
