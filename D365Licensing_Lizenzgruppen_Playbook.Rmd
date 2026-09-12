@@ -358,24 +358,58 @@ license_overview |>
 ## Kosten je Benutzer
 
 Schlanke, nach Kosten absteigend sortierte Auswertung — die direkte Antwort
-auf "wie viel kostet Benutzer X pro Monat". Im Unterschied zu
-`user_overview` (oben) enthält diese Tabelle **nur** die Kostensicht, ohne die
-zusammengefassten Lizenzgruppen-/SKU-Strings — praktisch für ein Ranking oder
-einen schnellen Kostenreport.
+auf "wie viel kostet Benutzer X pro Monat, und wodurch". Im Unterschied zu
+`user_overview` (oben) enthält diese Tabelle zusätzlich eine
+`LicenseBreakdown`-Spalte, die genau aufschlüsselt, aus welchen SKUs sich die
+Gesamtkosten zusammensetzen, z. B.:
+
+```text
+1 SCM Base X 168,5 + 1 Finance Attached X 28,1
+```
+
+Ein Term je SKU: `<Anzahl> <SKU> X <Preis>` (Komma als Dezimaltrennzeichen),
+mehrere Terme mit `+` verbunden. `<Anzahl>` ist normalerweise `1` (eine
+Gruppenmitgliedschaft = eine SKU), kann aber >1 sein, falls ein Benutzer dieselbe
+SKU über mehrere Lizenzgruppen erhält.
 
 ```{r cost-by-user}
+# Ein Term je Benutzer + SKU: "<Anzahl> <SKU> X <Preis>"
+license_line_items <- license_costs |>
+  dplyr::filter(!is.na(SKU)) |>
+  dplyr::count(userPrincipalName, SKU, Price, name = "Anzahl") |>
+  dplyr::arrange(userPrincipalName, SKU) |>
+  dplyr::mutate(
+    LineItem = paste0(
+      Anzahl, " ", SKU, " X ",
+      formatC(Price, format = "f", digits = 1, decimal.mark = ",")
+    )
+  ) |>
+  dplyr::group_by(userPrincipalName) |>
+  dplyr::summarise(
+    LicenseBreakdown = paste(LineItem, collapse = " + "),
+    .groups          = "drop"
+  )
+
+# TotalMonthlyCost weiterhin über ALLE Zeilen (auch Benutzer ohne SKU-Mapping,
+# die sonst aus license_line_items herausfallen wuerden)
 cost_by_user <- license_costs |>
   dplyr::group_by(userPrincipalName) |>
   dplyr::summarise(
     TotalMonthlyCost = sum(Price, na.rm = TRUE),
     .groups           = "drop"
   ) |>
+  dplyr::left_join(license_line_items, by = "userPrincipalName") |>
+  dplyr::select(userPrincipalName, LicenseBreakdown, TotalMonthlyCost) |>
   dplyr::arrange(dplyr::desc(TotalMonthlyCost))
 
 cat("Benutzer mit Lizenzkosten:", nrow(cost_by_user), "\n")
 cat("Monatliche Gesamtkosten aller Benutzer:",
     sum(cost_by_user$TotalMonthlyCost, na.rm = TRUE), "\n")
 ```
+
+`LicenseBreakdown` ist `NA`, wenn keine der Lizenzgruppen des Benutzers in
+`LicenseGroups.xlsx` auf eine SKU abgebildet werden konnte (`TotalMonthlyCost`
+ist dann `0`) — ein Hinweis auf eine fehlende Mapping-Zeile.
 
 ## Kosten je SKU (Kostentreiber)
 
@@ -458,9 +492,11 @@ Enthält:
 
 Enthält je Benutzer:
 
+- `LicenseBreakdown` — Aufschlüsselung der Kosten je SKU, z. B.
+  `1 SCM Base X 168,5 + 1 Finance Attached X 28,1`
 - monatliche Gesamtkosten (`TotalMonthlyCost`)
 - absteigend sortiert — schneller Überblick, welche Benutzer die höchsten
-  Lizenzkosten verursachen
+  Lizenzkosten verursachen und wodurch
 
 ### Arbeitsblatt: cost_by_sku
 
@@ -497,3 +533,4 @@ Empfohlener Ablauf:
 | 1.1 | 12.09.2026 | Lizenz-Mapping (`LicenseGroups.xlsx`) und Ermittlung der tatsächlichen SKUs ergänzt |
 | 1.2 | 12.09.2026 | Lizenzkosten (`skuPrices.xlsx`, `cost_by_sku`) ergänzt; alle Ausgabedateien von CSV auf Excel (`.xlsx`) umgestellt |
 | 1.3 | 12.09.2026 | Explizite Kosten je Benutzer (`cost_by_user`); Pfade auf reale Arbeitsumgebung (`Data`/`Final`/`Config`) umgestellt, `dir.create()` reaktiviert |
+| 1.4 | 13.09.2026 | `cost_by_user` um `LicenseBreakdown` erweitert (Aufschlüsselung je SKU, z. B. `1 SCM Base X 168,5 + 1 Finance Attached X 28,1`) |
