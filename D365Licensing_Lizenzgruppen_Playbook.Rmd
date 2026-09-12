@@ -1,0 +1,293 @@
+---
+title: "Dynamics 365 Lizenzmanagement über Azure AD Sicherheitsgruppen"
+subtitle: "D365Licensing – Playbook"
+author: "Cedric Kameni"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: kate
+    df_print: paged
+  word_document:
+    default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE, echo = TRUE)
+```
+
+---
+
+# Ziel
+
+Dieses Dokument beschreibt die Verwaltung der Dynamics 365 Lizenzen über Azure
+AD Sicherheitsgruppen, den Export der Gruppenmitglieder sowie die
+Konsolidierung der Exportdaten mittels R.
+
+---
+
+# Überblick
+
+Die Lizenzvergabe für Dynamics 365 Finance & Supply Chain Management erfolgt
+über dedizierte Azure AD Sicherheitsgruppen.
+
+Jede Sicherheitsgruppe ist mit einer entsprechenden Lizenzkonfiguration in
+Entra ID verknüpft. Sobald ein Benutzer einer Gruppe hinzugefügt wird, erhält
+er automatisch die zugehörigen Dynamics 365 Lizenzen.
+
+## Verwendete Sicherheitsgruppen
+
+| Sicherheitsgruppe | Lizenzzuordnung |
+|--------------------|------------------|
+| `AAD_LIC_D365-FI` | Dynamics 365 Finance Base License |
+| `AAD_LIC_D365-SCM` | Dynamics 365 Supply Chain Management Base License |
+| `AAD_LIC_D365-FI-ATTACH` | SCM Base + Finance Attach License |
+| `AAD_LIC_D365-SCM-ATTACH` | Finance Base + SCM Attach License |
+| `AAD_LIC_D365-TEAM` | Team Member License |
+| `AAD_LIC_D365-ACTIVITY` | Activity License |
+
+---
+
+# Lizenzgruppen
+
+## AAD_LIC_D365-FI
+
+Benutzer dieser Gruppe erhalten **ausschließlich**:
+
+- Dynamics 365 Finance Base License
+
+## AAD_LIC_D365-SCM
+
+Benutzer dieser Gruppe erhalten **ausschließlich**:
+
+- Dynamics 365 SCM Base License
+
+## AAD_LIC_D365-FI-ATTACH
+
+Benutzer dieser Gruppe erhalten:
+
+- Dynamics 365 SCM Base License
+- Dynamics 365 Finance Attach License
+
+## AAD_LIC_D365-SCM-ATTACH
+
+Benutzer dieser Gruppe erhalten:
+
+- Dynamics 365 Finance Base License
+- Dynamics 365 SCM Attach License
+
+## AAD_LIC_D365-TEAM
+
+Benutzer dieser Gruppe erhalten:
+
+- Dynamics 365 Team Member License
+
+## AAD_LIC_D365-ACTIVITY
+
+Benutzer dieser Gruppe erhalten:
+
+- Dynamics 365 Activity License
+
+---
+
+# Ermittlung der tatsächlichen Lizenzzuordnung
+
+Da Benutzer Mitglied mehrerer Gruppen sein können, muss zur Analyse der
+effektiven Lizenzzuordnung zunächst die Mitgliederliste jeder Lizenzgruppe
+exportiert werden.
+
+## Export aus Entra ID
+
+Für jede Lizenzgruppe:
+
+1. Gruppe in Entra ID öffnen
+2. **Members** auswählen
+3. **Export Members** auswählen
+4. CSV herunterladen
+
+Beispiel-Dateinamen (Gruppenname + Exportdatum als Suffix):
+
+```text
+exportGroupMembers_2026-09-11_AAD_LIC_D365-FI.csv
+exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM.csv
+exportGroupMembers_2026-09-11_AAD_LIC_D365-FI-ATTACH.csv
+exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM-ATTACH.csv
+exportGroupMembers_2026-09-11_AAD_LIC_D365-TEAM.csv
+exportGroupMembers_2026-09-11_AAD_LIC_D365-ACTIVITY.csv
+```
+
+---
+
+# Ablagestruktur
+
+Alle Exportdateien werden in einem gemeinsamen Verzeichnis **innerhalb des
+Projekts** gespeichert (`data/D365LicenseExport/` unter dem Projektstamm).
+Das Verzeichnis wird beim Ausführen des R-Skripts automatisch angelegt, falls
+es noch nicht existiert (siehe `dir.create()` im Abschnitt „Verzeichnis
+definieren").
+
+Beispiel:
+
+```text
+D365Licensing\data\D365LicenseExport\
+├── exportGroupMembers_2026-09-11_AAD_LIC_D365-FI.csv
+├── exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM.csv
+├── exportGroupMembers_2026-09-11_AAD_LIC_D365-FI-ATTACH.csv
+├── exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM-ATTACH.csv
+├── exportGroupMembers_2026-09-11_AAD_LIC_D365-TEAM.csv
+└── exportGroupMembers_2026-09-11_AAD_LIC_D365-ACTIVITY.csv
+```
+
+---
+
+# Datenkonsolidierung mit R
+
+## Ziel
+
+Die CSV-Dateien sollen:
+
+1. automatisch eingelesen werden
+2. zu einer Gesamttabelle zusammengeführt werden
+3. um eine zusätzliche Spalte `LicenseGroup` erweitert werden
+4. als einzelne Ausgabedatei bereitgestellt werden
+
+## Benötigte Pakete
+
+```{r install-packages}
+install.packages("tidyverse")
+```
+
+## Bibliotheken laden
+
+```{r libraries}
+library(tidyverse)
+```
+
+## Verzeichnis definieren
+
+`export_path` liegt **innerhalb des Projekts** (`D365Licensing/data/`), statt
+auf einem festen Laufwerksbuchstaben – so funktioniert das Playbook auf jedem
+Rechner, auf dem das Projekt ausgecheckt ist. `dir.create()` legt das
+Verzeichnis an, falls es noch nicht existiert (z. B. beim allerersten Lauf,
+bevor die ersten Entra-ID-Exporte dort abgelegt wurden).
+
+```{r export-path}
+export_path <- "C:/Users/Cedric/Documents/RProjects/D365Licensing/data/D365LicenseExport/"
+dir.create(export_path, showWarnings = FALSE, recursive = TRUE)
+```
+
+## CSV-Dateien einlesen und zusammenführen
+
+```{r consolidate}
+files <- list.files(
+  export_path,
+  pattern   = "\\.csv$",
+  full.names = TRUE
+)
+
+# Gruppenname aus dem Dateinamen extrahieren
+# exportGroupMembers_2026-09-11_AAD_LIC_D365-FI.csv -> "AAD_LIC_D365-FI"
+extract_group <- function(filename) {
+  stringr::str_extract(
+    basename(filename),
+    "AAD_LIC_D365.*(?=\\.csv)"
+  )
+}
+
+license_members <- purrr::map_dfr(files, function(file) {
+  df <- readr::read_csv(file, show_col_types = FALSE)
+  df$LicenseGroup <- extract_group(file)
+  df
+})
+```
+
+## Ergebnis prüfen
+
+```{r check}
+dplyr::glimpse(license_members)
+dplyr::count(license_members, LicenseGroup)
+```
+
+---
+
+# Export der Gesamttabelle
+
+```{r export-all}
+readr::write_csv(
+  license_members,
+  file.path(export_path, "D365_All_License_Assignments.csv")
+)
+```
+
+---
+
+# Erweiterte Analyse
+
+Da Benutzer in mehreren Gruppen vorkommen können, empfiehlt sich zusätzlich
+eine Übersicht der Gruppen pro Benutzer.
+
+## Benutzer je Lizenzgruppe
+
+```{r overview}
+license_overview <- license_members |>
+  dplyr::group_by(userPrincipalName) |>
+  dplyr::summarise(
+    LicenseGroups = paste(sort(unique(LicenseGroup)), collapse = "; "),
+    .groups = "drop"
+  )
+```
+
+## Export der Benutzerübersicht
+
+```{r export-overview}
+readr::write_csv(
+  license_overview,
+  file.path(export_path, "D365_User_License_Overview.csv")
+)
+```
+
+---
+
+# Ergebnis
+
+Nach Ausführung des Skripts stehen zwei Dateien zur Verfügung:
+
+## D365_All_License_Assignments.csv
+
+Enthält:
+
+- alle exportierten Gruppenmitglieder
+- alle Originalspalten aus Entra ID
+- zusätzliche Spalte `LicenseGroup`
+
+## D365_User_License_Overview.csv
+
+Enthält:
+
+- jeden Benutzer genau einmal
+- sämtliche Lizenzgruppen des Benutzers
+- ideale Grundlage für Lizenz-Audits und Compliance-Prüfungen
+
+---
+
+# Betriebliches Vorgehen
+
+Empfohlener Ablauf:
+
+1. „Members" jeder Lizenzgruppe aus Entra ID exportieren
+2. Dateien im Exportverzeichnis `data/D365LicenseExport/` ablegen (wird bei
+   Bedarf automatisch angelegt)
+3. R-Skript ausführen
+4. Konsolidierte Dateien erzeugen
+5. Lizenzzuordnungen prüfen und korrigieren
+
+---
+
+# Versionierung
+
+| Version | Datum | Beschreibung |
+|---------|------------|--------------|
+| 1.0 | 11.09.2026 | Initiale Erstellung des Playbooks |
