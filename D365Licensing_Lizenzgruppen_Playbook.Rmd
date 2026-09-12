@@ -4,6 +4,8 @@ subtitle: "D365Licensing – Playbook"
 author: "Cedric Kameni"
 date: "`r Sys.Date()`"
 output:
+  word_document:
+    default
   html_document:
     toc: true
     toc_float: true
@@ -11,8 +13,6 @@ output:
     theme: flatly
     highlight: kate
     df_print: paged
-  word_document:
-    default
 ---
 
 ```{r setup, include=FALSE}
@@ -128,40 +128,42 @@ exportGroupMembers_2026-09-11_AAD_LIC_D365-ACTIVITY.csv
 
 # Ablagestruktur
 
-Alle Exportdateien werden in einem gemeinsamen Verzeichnis **innerhalb des
-Projekts** gespeichert (`data/D365LicenseExport/` unter dem Projektstamm).
-Das Verzeichnis wird beim Ausführen des R-Skripts automatisch angelegt, falls
-es noch nicht existiert (siehe `dir.create()` im Abschnitt „Arbeitsverzeichnis
-definieren").
+Die Rohexporte liegen direkt in `Data\`, die vom Skript erzeugten Ergebnisse in
+`Data\Final\`. Das Ergebnisverzeichnis wird beim Ausführen des R-Skripts
+automatisch angelegt, falls es noch nicht existiert (siehe `dir.create()` im
+Abschnitt „Arbeitsverzeichnis definieren").
 
 ```text
-D365Licensing\data\D365LicenseExport\
+Licensing\Data\
 ├── exportGroupMembers_2026-09-11_AAD_LIC_D365-FI.csv
 ├── exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM.csv
 ├── exportGroupMembers_2026-09-11_AAD_LIC_D365-FI-ATTACH.csv
 ├── exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM-ATTACH.csv
 ├── exportGroupMembers_2026-09-11_AAD_LIC_D365-TEAM.csv
-└── exportGroupMembers_2026-09-11_AAD_LIC_D365-ACTIVITY.csv
+├── exportGroupMembers_2026-09-11_AAD_LIC_D365-ACTIVITY.csv
+└── Final\
+    ├── D365_All_License_Assignments.xlsx
+    └── D365_User_License_Overview.xlsx
 ```
 
 ## Konfigurationsdateien (Mapping + Preise)
 
-Zusätzlich zu den Rohexporten werden zwei Konfigurationsdateien benötigt:
+Zusätzlich zu den Rohexporten werden zwei Konfigurationsdateien benötigt, in
+einem eigenen Verzeichnis getrennt von den (vergänglichen) Rohexporten:
+
+```text
+Licensing\Config\LicenseGroups.xlsx
+Licensing\Config\skuPrices.xlsx
+```
 
 - `LicenseGroups.xlsx` — Zuordnung der Azure AD Gruppen zu den tatsächlichen
   Dynamics-Lizenz-SKUs.
-- `skuPrices.xlsx` — Kosten je SKU (z. B. der monatliche Preis pro Lizenz).
+- `skuPrices.xlsx` — Kosten je SKU (Spalte `Price`).
 
 Im Unterschied zu den Gruppenexporten sind das **keine Rohdaten-Exporte**,
 sondern gepflegte Fachlogik (welche Gruppe steht für welche SKU, was kostet
-welche SKU) — sie liegen deshalb **im Repository unter `inst/config/`** statt
-im (git-ignorierten) Exportverzeichnis, damit Änderungen nachvollziehbar
-versioniert werden:
-
-```text
-D365Licensing\inst\config\LicenseGroups.xlsx
-D365Licensing\inst\config\skuPrices.xlsx
-```
+welche SKU) und sollten entsprechend versioniert/gesichert werden, wenn sich
+Gruppen oder Preise ändern.
 
 ---
 
@@ -176,8 +178,8 @@ Die CSV-Dateien sollen:
 3. um eine zusätzliche Spalte `LicenseGroup` erweitert werden
 4. über die Mapping-Datei den tatsächlichen Lizenz-SKUs zugeordnet werden
 5. über die Preistabelle mit den Lizenzkosten verknüpft werden
-6. als Gesamt-, Benutzer- und Kostenübersicht bereitgestellt werden — **als
-   Excel-Dateien**, nicht als CSV
+6. als Gesamt-, Benutzer- und Kostenübersicht (je SKU **und** je Benutzer)
+   bereitgestellt werden — **als Excel-Dateien**, nicht als CSV
 
 ## Benötigte Pakete
 
@@ -195,25 +197,25 @@ library(writexl)
 
 ## Arbeitsverzeichnis definieren
 
-`export_path` liegt **innerhalb des Projekts** (`D365Licensing/data/`), statt
-auf einem festen Laufwerksbuchstaben oder einem anderen Benutzerprofil – so
-funktioniert das Playbook auf jedem Rechner, auf dem das Projekt ausgecheckt
-ist. `config_path` zeigt auf die versionierte Mapping-Datei. `dir.create()`
-legt das Exportverzeichnis an, falls es noch nicht existiert (z. B. beim
-allerersten Lauf, bevor die ersten Entra-ID-Exporte dort abgelegt wurden).
+`data_path` ist das Verzeichnis, in das die Entra-ID-CSV-Exporte abgelegt
+werden. `export_path` (`Data/Final/`) ist das Ausgabeverzeichnis für die vom
+Skript erzeugten Excel-Dateien und wird per `dir.create()` automatisch
+angelegt, falls es noch nicht existiert. `config_path` zeigt auf die beiden
+Mapping-/Preis-Dateien.
 
 ```{r paths}
-export_path <- "C:/Users/Cedric/Documents/RProjects/D365Licensing/data/D365LicenseExport/"
+data_path   <- "C:/Users/ckam_admin/Documents/RProjects/Licensing/Data/"
+export_path <- paste0(data_path, "Final/")
 dir.create(export_path, showWarnings = FALSE, recursive = TRUE)
 
-config_path <- "C:/Users/Cedric/Documents/RProjects/D365Licensing/inst/config/"
+config_path <- "C:/Users/ckam_admin/Documents/RProjects/Licensing/Config/"
 ```
 
 ## CSV-Dateien einlesen und zusammenführen
 
 ```{r consolidate}
 files <- list.files(
-  export_path,
+  data_path,
   pattern    = "\\.csv$",
   full.names = TRUE
 )
@@ -294,9 +296,9 @@ license_detailed <- license_members |>
 
 ## Lizenzkosten laden
 
-Die Datei `skuPrices.xlsx` enthält die Kosten je SKU (z. B. den monatlichen
-Preis pro Lizenz) — **eine Zeile je SKU**. Sie wird genauso geladen wie
-`LicenseGroups.xlsx`.
+Die Datei `skuPrices.xlsx` enthält die Kosten je SKU in der Spalte `Price`
+(z. B. der monatliche Preis pro Lizenz) — **eine Zeile je SKU**. Sie wird
+genauso geladen wie `LicenseGroups.xlsx`.
 
 ```{r load-prices}
 sku_Prices <- readxl::read_excel(
@@ -307,8 +309,8 @@ sku_Prices <- readxl::read_excel(
 Beispiel-Inhalt (Platzhalterwerte — durch die tatsächlichen Preise aus dem
 Lizenzvertrag ersetzen):
 
-| SKU | MonthlyPriceEUR |
-|-----|-----------------|
+| SKU | Price |
+|-----|-------|
 | Finance Base | 180 |
 | SCM Base | 180 |
 | Finance Attached | 30 |
@@ -323,6 +325,9 @@ license_costs <- license_detailed |>
   dplyr::left_join(sku_Prices, by = "SKU")
 ```
 
+`license_costs` hat eine Zeile je Benutzer + SKU (inkl. `Price`) und ist die
+Grundlage für **beide** folgenden Kostenauswertungen: je Benutzer und je SKU.
+
 ## Benutzerübersicht erzeugen
 
 Für jeden Benutzer werden sämtliche Lizenzgruppen, die zugehörigen SKUs und
@@ -334,7 +339,7 @@ license_overview <- license_costs |>
   dplyr::summarise(
     LicenseGroups    = paste(sort(unique(LicenseGroup)), collapse = "; "),
     SKUs             = paste(sort(unique(SKU)),          collapse = "; "),
-    TotalMonthlyCost = sum(MonthlyPriceEUR, na.rm = TRUE),
+    TotalMonthlyCost = sum(Price, na.rm = TRUE),
     .groups          = "drop"
   )
 ```
@@ -350,22 +355,48 @@ license_overview |>
   dplyr::count(SKUs, sort = TRUE)
 ```
 
+## Kosten je Benutzer
+
+Schlanke, nach Kosten absteigend sortierte Auswertung — die direkte Antwort
+auf "wie viel kostet Benutzer X pro Monat". Im Unterschied zu
+`user_overview` (oben) enthält diese Tabelle **nur** die Kostensicht, ohne die
+zusammengefassten Lizenzgruppen-/SKU-Strings — praktisch für ein Ranking oder
+einen schnellen Kostenreport.
+
+```{r cost-by-user}
+cost_by_user <- license_costs |>
+  dplyr::group_by(userPrincipalName) |>
+  dplyr::summarise(
+    TotalMonthlyCost = sum(Price, na.rm = TRUE),
+    .groups           = "drop"
+  ) |>
+  dplyr::arrange(dplyr::desc(TotalMonthlyCost))
+
+cat("Benutzer mit Lizenzkosten:", nrow(cost_by_user), "\n")
+cat("Monatliche Gesamtkosten aller Benutzer:",
+    sum(cost_by_user$TotalMonthlyCost, na.rm = TRUE), "\n")
+```
+
 ## Kosten je SKU (Kostentreiber)
 
 Zeigt, wie viele Benutzer je SKU lizenziert sind und welche Gesamtkosten daraus
-entstehen — die eigentliche Antwort auf "welche Lizenz verursacht wie viele
-Kosten".
+entstehen — die Antwort auf "welche Lizenz verursacht wie viele Kosten".
 
 ```{r cost-by-sku}
 cost_by_sku <- license_costs |>
   dplyr::count(SKU, name = "Anzahl") |>
   dplyr::left_join(sku_Prices, by = "SKU") |>
-  dplyr::mutate(TotalMonthlyCostEUR = Anzahl * MonthlyPriceEUR) |>
-  dplyr::arrange(dplyr::desc(TotalMonthlyCostEUR))
+  dplyr::mutate(TotalMonthlyCost = Anzahl * Price) |>
+  dplyr::arrange(dplyr::desc(TotalMonthlyCost))
 
 cat("Monatliche Gesamtkosten aller Lizenzen:",
-    sum(cost_by_sku$TotalMonthlyCostEUR, na.rm = TRUE), "EUR\n")
+    sum(cost_by_sku$TotalMonthlyCost, na.rm = TRUE), "\n")
 ```
+
+`sum(cost_by_user$TotalMonthlyCost)` und `sum(cost_by_sku$TotalMonthlyCost)`
+müssen übereinstimmen — beide summieren dieselben Zeilen aus `license_costs`,
+nur nach unterschiedlichen Dimensionen gruppiert. Eine Abweichung wäre ein
+Hinweis auf einen Fehler in einer der beiden Gruppierungen.
 
 ## Export der Ergebnisse
 
@@ -375,6 +406,7 @@ writexl::write_xlsx(
     group_members    = license_members,
     license_detailed = license_detailed,
     user_overview    = license_overview,
+    cost_by_user     = cost_by_user,
     cost_by_sku      = cost_by_sku
   ),
   file.path(export_path, "D365_User_License_Overview.xlsx")
@@ -385,8 +417,8 @@ writexl::write_xlsx(
 
 # Ergebnis
 
-Nach Ausführung des Skripts stehen zwei **Excel-Dateien** zur Verfügung (keine
-CSV):
+Nach Ausführung des Skripts stehen zwei **Excel-Dateien** in `Data\Final\` zur
+Verfügung (keine CSV):
 
 ## D365_All_License_Assignments.xlsx
 
@@ -410,6 +442,7 @@ Enthält je Zeile:
 - Benutzer
 - Lizenzgruppe
 - tatsächlich zugeordnete SKU
+- Preis dieser SKU
 
 ### Arbeitsblatt: user_overview
 
@@ -420,6 +453,14 @@ Enthält:
 - sämtliche zugewiesenen Lizenz-SKUs
 - monatliche Gesamtkosten (`TotalMonthlyCost`)
 - ideale Grundlage für Lizenz-Audits und Compliance-Prüfungen
+
+### Arbeitsblatt: cost_by_user
+
+Enthält je Benutzer:
+
+- monatliche Gesamtkosten (`TotalMonthlyCost`)
+- absteigend sortiert — schneller Überblick, welche Benutzer die höchsten
+  Lizenzkosten verursachen
 
 ### Arbeitsblatt: cost_by_sku
 
@@ -438,14 +479,13 @@ Enthält je SKU:
 Empfohlener Ablauf:
 
 1. „Members" jeder Lizenzgruppe aus Entra ID exportieren
-2. CSV-Dateien im Exportverzeichnis `data/D365LicenseExport/` ablegen (wird
-   bei Bedarf automatisch angelegt)
-3. `LicenseGroups.xlsx` und `skuPrices.xlsx` in `inst/config/` aktuell halten,
+2. CSV-Dateien im Verzeichnis `Data\` ablegen
+3. `LicenseGroups.xlsx` und `skuPrices.xlsx` in `Config\` aktuell halten,
    falls sich Gruppe-zu-SKU-Zuordnung oder Lizenzpreise ändern
-4. R-Skript ausführen
+4. R-Skript ausführen (`Data\Final\` wird bei Bedarf automatisch angelegt)
 5. Konsolidierte Excel-Dateien erzeugen
-6. Lizenzzuordnungen, Kosten und Qualitätskontrolle prüfen, Auffälligkeiten
-   korrigieren
+6. Lizenzzuordnungen, Kosten je Benutzer/SKU und Qualitätskontrolle prüfen,
+   Auffälligkeiten korrigieren
 
 ---
 
@@ -456,3 +496,4 @@ Empfohlener Ablauf:
 | 1.0 | 11.09.2026 | Initiale Erstellung des Playbooks |
 | 1.1 | 12.09.2026 | Lizenz-Mapping (`LicenseGroups.xlsx`) und Ermittlung der tatsächlichen SKUs ergänzt |
 | 1.2 | 12.09.2026 | Lizenzkosten (`skuPrices.xlsx`, `cost_by_sku`) ergänzt; alle Ausgabedateien von CSV auf Excel (`.xlsx`) umgestellt |
+| 1.3 | 12.09.2026 | Explizite Kosten je Benutzer (`cost_by_user`); Pfade auf reale Arbeitsumgebung (`Data`/`Final`/`Config`) umgestellt, `dir.create()` reaktiviert |
