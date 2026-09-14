@@ -116,9 +116,9 @@ Der Export erzeugt zehn CSV-Dateien, die gemeinsam das technische Datenmodell vo
 
 ### 3.1 `Tables.csv`
 
-- **Zweck:** Kopfdaten aller Tabellen (Name, Label, Tabellengruppe, Modul- und Formularzuordnung, Konfigurationsschlüssel).
-- **Wichtige Spalten:** `TableName`, `Label`, `TableGroup`, `Modules`, `FormRef`, `DataSharingType`, `ReplacementKey`, `ConfigurationKey`, `FieldCount`, `IndexCount`, `RelationCount`.
-- **Nutzen:** Ausgangspunkt jeder Analyse — Einstiegspunkt für Migrations-Scoping, Impact-Analyse und Data-Catalog-Einträge auf Tabellenebene.
+- **Zweck:** Kopfdaten aller Tabellen (Name, Label, Tabellengruppe, Modul- und Formularzuordnung, Konfigurationsschlüssel, Schlüsselreferenzen).
+- **Wichtige Spalten:** `TableName`, `Label`, `TableGroup`, `Modules`, `FormRef`, `DataSharingType`, `PrimaryIndex`, `ClusteredIndex`, `ReplacementKey`, `ConfigurationKey`, `FieldCount`, `IndexCount`, `RelationCount`.
+- **Nutzen:** Ausgangspunkt jeder Analyse — Einstiegspunkt für Migrations-Scoping, Impact-Analyse und Data-Catalog-Einträge auf Tabellenebene; `PrimaryIndex`/`ClusteredIndex`/`ReplacementKey` verweisen per Name auf `Indexes.csv`.
 
 ### 3.2 `Fields.csv`
 
@@ -140,9 +140,9 @@ Der Export erzeugt zehn CSV-Dateien, die gemeinsam das technische Datenmodell vo
 
 ### 3.5 `Relations.csv`
 
-- **Zweck:** Tabellenbeziehungen (Foreign-Key-artige Relations) inkl. Kardinalität und Feldabgleich.
-- **Wichtige Spalten:** `TableName`, `RelationName`, `RelatedTable`, `Cardinality`, `ConstraintFields`.
-- **Nutzen:** Basis für Entity-Relationship-Diagramme und automatisierte Join-Vorschläge in BI-Modellen.
+- **Zweck:** Tabellenbeziehungen (Foreign-Key-artige Relations) inkl. Kardinalität, Beziehungsart und aufgelöstem Constraint (Feld-Join oder Fixwert-Filter).
+- **Wichtige Spalten:** `TableName`, `RelationName`, `RelationType`, `RelatedTable`, `Cardinality`, `RelationshipType`, `ConstraintFields`.
+- **Nutzen:** Basis für Entity-Relationship-Diagramme und automatisierte Join-Vorschläge in BI-Modellen; dient zusätzlich als Auflösungstabelle für Joins in Views/Data Entities, die per `JoinRelationName` auf eine hier definierte Relation verweisen (siehe 6.5).
 
 ### 3.6 `Views.csv`
 
@@ -152,9 +152,9 @@ Der Export erzeugt zehn CSV-Dateien, die gemeinsam das technische Datenmodell vo
 
 ### 3.7 `DataEntities.csv`
 
-- **Zweck:** Alle Data Entities (OData/Data-Management-fähige Views) inkl. Public-Name, Modul- und Menüpunkt-Zuordnung sowie aufgelöstem Primärschlüssel.
-- **Wichtige Spalten:** `EntityName`, `Modules`, `FormRef`, `PublicEntityName`, `PublicCollectionName`, `PrimaryTable`, `PrimaryKeyFields`, `DataManagementEnabled`.
-- **Nutzen:** Zentrale Referenz für Integrationen (OData, Data Management Framework) und Migrationsprojekte; `Modules`/`FormRef` ermöglichen zusätzlich die Zuordnung zu Fachbereich und D365-Deeplink (analog `Entity_Comparison_Export.R`).
+- **Zweck:** Alle Data Entities (OData/Data-Management-fähige Views) inkl. Public-Name, Modul- und Menüpunkt-Zuordnung, Veraltet-Kennzeichen sowie aufgelöstem Primärschlüssel.
+- **Wichtige Spalten:** `EntityName`, `Modules`, `FormRef`, `EntityCategory`, `IsObsolete`, `PublicEntityName`, `PublicCollectionName`, `PrimaryTable`, `PrimaryKeyFields`, `DataManagementEnabled`, `RelatedEntityCount`.
+- **Nutzen:** Zentrale Referenz für Integrationen (OData, Data Management Framework) und Migrationsprojekte; `Modules`/`FormRef` ermöglichen zusätzlich die Zuordnung zu Fachbereich und D365-Deeplink (analog `Entity_Comparison_Export.R`); `IsObsolete` warnt vor veralteten Entities in neuen Integrationen.
 
 ### 3.8 `Indexes.csv`
 
@@ -395,22 +395,25 @@ Eine reale Beispieldatei (`AssetActivityCode.xml`) aus der Zielumgebung korrigie
 - `<TitleField1>` / `<TitleField2>` benennen die Felder, die als Datensatztitel in Formularen angezeigt werden.
 - `<ReplacementKey>` verweist per Name auf einen Eintrag in `Indexes` (siehe 6.8) — der dort hinterlegte Index dient als bevorzugter Anzeige-/Sortierschlüssel.
 
-**Verwendete XML-Struktur (Auszug, gekürzt aus `AssetActivityCode.xml`):**
+Eine zweite reale Beispieldatei (`SalesTable.xml`) bestätigt dieses Muster und zeigt zwei weitere, nach demselben Prinzip funktionierende Verweise auf `Indexes.csv`: **`<PrimaryIndex>`** (der fachliche Primärschlüssel-Index) und **`<ClusteredIndex>`** (der physisch clusternde Index) — beide werden ergänzt. In `SalesTable.xml` sind `PrimaryIndex`, `ClusteredIndex` und `ReplacementKey` alle drei identisch (`SalesIdx`), müssen es aber nicht sein.
+
+**Verwendete XML-Struktur (Auszug, kombiniert aus `AssetActivityCode.xml` und `SalesTable.xml`):**
 
 ```xml
 <AxTable xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
-  <Name>AssetActivityCode</Name>
-  <ConfigurationKey>Asset</ConfigurationKey>
-  <DeveloperDocumentation>@SYS329889</DeveloperDocumentation>
+  <Name>SalesTable</Name>
+  <ConfigurationKey>LogisticsBasic</ConfigurationKey>
+  <DeveloperDocumentation>@SYS124484</DeveloperDocumentation>
   <FormRef>AssetActivityCode</FormRef>
-  <Label>@FixedAssets:FA_TableTitle_AssetActivityCode</Label>
-  <TableGroup>Group</TableGroup>
-  <TitleField1>AssetActivityCode</TitleField1>
-  <TitleField2>Description</TitleField2>
-  <CacheLookup>EntireTable</CacheLookup>
-  <DataSharingType>Duplicate</DataSharingType>
-  <Modules>FixedAssets</Modules>
-  <ReplacementKey>ActivityCodeIdx</ReplacementKey>
+  <Label>@SYS25193</Label>
+  <TableGroup>WorksheetHeader</TableGroup>
+  <TitleField1>SalesId</TitleField1>
+  <TitleField2>SalesName</TitleField2>
+  <CacheLookup>Found</CacheLookup>
+  <ClusteredIndex>SalesIdx</ClusteredIndex>
+  <Modules>SalesAndMarketing</Modules>
+  <PrimaryIndex>SalesIdx</PrimaryIndex>
+  <ReplacementKey>SalesIdx</ReplacementKey>
   <Fields> ... </Fields>
   <FieldGroups> ... </FieldGroups>
   <Indexes> ... </Indexes>
@@ -434,6 +437,8 @@ extract_table_header <- function(root) {
     DataSharingType         = xml_text_safe(root, "DataSharingType"),
     TitleField1             = xml_text_safe(root, "TitleField1"),
     TitleField2             = xml_text_safe(root, "TitleField2"),
+    PrimaryIndex             = xml_text_safe(root, "PrimaryIndex"),
+    ClusteredIndex           = xml_text_safe(root, "ClusteredIndex"),
     ReplacementKey           = xml_text_safe(root, "ReplacementKey"),
     CacheLookup             = xml_text_safe(root, "CacheLookup"),
     DeveloperDocumentation  = xml_text_safe(root, "DeveloperDocumentation"),
@@ -461,9 +466,10 @@ tables_export <- export_tables(cfg)
 
 **Beispiel der erzeugten CSV-Struktur:**
 
-| TableName | Label | TableGroup | Modules | FormRef | DataSharingType | ReplacementKey | FieldCount | IndexCount |
-|-----------|-------|------------|---------|---------|--------------------|-------------------|------------|------------|
-| AssetActivityCode | @FixedAssets:FA_TableTitle_AssetActivityCode | Group | FixedAssets | AssetActivityCode | Duplicate | ActivityCodeIdx | 2 | 1 |
+| TableName | Label | TableGroup | Modules | PrimaryIndex | ClusteredIndex | ReplacementKey | FieldCount | RelationCount |
+|-----------|-------|------------|---------|---------------|-------------------|-------------------|------------|-----------------|
+| SalesTable | @SYS25193 | WorksheetHeader | SalesAndMarketing | SalesIdx | SalesIdx | SalesIdx | 187 | 78 |
+| AssetActivityCode | @FixedAssets:FA_TableTitle_AssetActivityCode | Group | FixedAssets | | | ActivityCodeIdx | 2 | 0 |
 
 ### 6.2 Felder (`Fields.csv`)
 
@@ -677,22 +683,56 @@ enums_export <- export_enums(cfg)
 
 ### 6.5 Relations (`Relations.csv`)
 
-**Fachliche Beschreibung:** Relations sind unter `Relations/AxTableRelation` innerhalb der `AxTable`-Datei verschachtelt. Jede Relation referenziert eine verwandte Tabelle (`RelatedTable`) und enthält eine oder mehrere Feld-Constraints (`Constraints/AxTableRelationConstraint`), die das Join-Feldpaar definieren.
+**Fachliche Beschreibung:** Relations sind unter `Relations/AxTableRelation` innerhalb der `AxTable`-Datei verschachtelt. Jede Relation referenziert eine verwandte Tabelle (`RelatedTable`) und enthält eine oder mehrere Constraints unter `Constraints/AxTableRelationConstraint`, die den Join definieren.
 
-**Verwendete XML-Struktur (Auszug):**
+> **Verifiziert an einer realen Datei mit befülltem `Relations`-Block (`SalesTable.xml`, 80+ Relations):** Der Constraint-Container heißt bestätigt **`<Constraints>`** — die ursprüngliche Annahme dieses Dokuments war korrekt, die zuvor zitierte Copilot-Vermutung `<RelationConstraints>` ist in dieser Datei **nicht** vorhanden. Der vorsorgliche Union-XPath aus der vorherigen Fassung ist damit nicht mehr nötig und wurde entfernt.
+>
+> Dieselbe Datei zeigt zusätzlich drei unterschiedliche Constraint-Typen (`i:type` am `AxTableRelationConstraint`), die zuvor nicht dokumentiert waren:
+> - **`AxTableRelationConstraintField`** — der Regelfall: `Field` (diese Tabelle) = `RelatedField` (Zieltabelle).
+> - **`AxTableRelationConstraintRelatedFixed`** — kein Feld-Join, sondern ein Fixwert-Filter auf der Zieltabelle, z. B. `<RelatedField>Module</RelatedField><ValueStr>ModuleInventCustVend::Cust</ValueStr>` (sinngemäß: *und Zieltabelle.Module = ModuleInventCustVend::Cust*).
+> - **`AxTableRelationConstraintFixed`** — ein Fixwert-Filter auf dem eigenen Feld, z. B. `<Field>InterCompanyOrder</Field><ValueStr>NoYes::Yes</ValueStr>`.
+>
+> Zudem trägt `AxTableRelation` selbst ein `i:type`-Attribut (meist `AxTableRelationForeignKey`, gelegentlich fehlend) sowie ein bislang nicht erfasstes `<RelationshipType>` (`Association` vs. `Link` — Link kennzeichnet polymorphe Referenzen auf gemeinsame Basistabellen wie `Common`). Beide werden ergänzt.
+>
+> **Zweite reale Datei, keine Korrektur nötig (`SalesLine.xml`, 90+ Relations):** Diese Datei bestätigt die obige Struktur vollständig und übt gezielt Randfälle aus, die der Code bereits korrekt behandelt — u. a. `AxTableRelationConstraintFixed` in gleich fünf verschiedenen Relations (`InventTransferTableRef`, `MCRPurchLineRef`, `ProdTableRef`, `PurchTableRef`, `SalesTableRef`, alle über dasselbe Diskriminatorfeld `InventRefType`) sowie `AxTableRelationConstraintRelatedFixed` mit numerischem `<Value>` statt `<ValueStr>` (`SATProductCode_MX` u. a.) — genau der Fallback-Pfad, den `format_relation_constraint()` dafür vorsieht. Einzige neue Erkenntnis: `<RelationshipType>` kennt einen dritten Wert, **`Composition`** — er kennzeichnet bei der Relation `SalesTable` (auf `SalesLine`) die Kopf-Positionen-Beziehung zur übergeordneten `SalesTable` und ist damit architekturell die zentrale Verknüpfung zwischen Auftragskopf und -zeilen.
+>
+> **Löst die im vorherigen Abschnitt offene Frage auf:** Das im Visual-Studio-Eigenschaftenfenster beobachtete `Join Relation Name = CustDirectDebitMandate` (siehe vorheriger Praxishinweis) referenziert exakt die hier in `SalesTable.xml` definierte Relation `CustDirectDebitMandate`, deren einziger Constraint lautet: `Field = DirectDebitMandate`, `RelatedField = RecId` — **nicht** `CustAccount=CustAccount`, wie Copilots eigene, unverifizierte Beispiel-Vermutung in der separaten Konversation fälschlich nahelegte. Das bestätigt sowohl den Auflösungsmechanismus über `Relations.csv` als auch, dass eine unverifizierte KI-generierte Vermutung selbst im Detail falsch liegen kann.
+
+**Verwendete XML-Struktur (Auszug aus `SalesTable.xml`, alle drei Constraint-Typen):**
 
 ```xml
 <Relations>
   <AxTableRelation>
-    <Name>CustGroup</Name>
-    <Cardinality>ZeroMany</Cardinality>
-    <RelatedTable>CustGroup</RelatedTable>
+    <Name>CustDirectDebitMandate</Name>
+    <Cardinality>ZeroMore</Cardinality>
+    <RelatedTable>CustDirectDebitMandate</RelatedTable>
     <RelatedTableCardinality>ZeroOne</RelatedTableCardinality>
+    <RelationshipType>Association</RelationshipType>
     <Constraints>
-      <AxTableRelationConstraint i:type="AxTableRelationConstraintField">
-        <Name>CustGroup</Name>
-        <Field>CustGroup</Field>
-        <RelatedField>CustGroup</RelatedField>
+      <AxTableRelationConstraint xmlns="" i:type="AxTableRelationConstraintField">
+        <Name>DirectDebitMandate</Name>
+        <Field>DirectDebitMandate</Field>
+        <RelatedField>RecId</RelatedField>
+      </AxTableRelationConstraint>
+    </Constraints>
+  </AxTableRelation>
+
+  <AxTableRelation xmlns="" i:type="AxTableRelationForeignKey">
+    <Name>CustMarkupGroup</Name>
+    <Cardinality>ZeroMore</Cardinality>
+    <RelatedTable>MarkupGroup</RelatedTable>
+    <RelatedTableCardinality>ZeroOne</RelatedTableCardinality>
+    <RelationshipType>Association</RelationshipType>
+    <Constraints>
+      <AxTableRelationConstraint xmlns="" i:type="AxTableRelationConstraintField">
+        <Name>MarkupGroup</Name>
+        <Field>MarkupGroup</Field>
+        <RelatedField>GroupId</RelatedField>
+      </AxTableRelationConstraint>
+      <AxTableRelationConstraint xmlns="" i:type="AxTableRelationConstraintRelatedFixed">
+        <Name>Module_Extern</Name>
+        <RelatedField>Module</RelatedField>
+        <ValueStr>MarkupModuleType::Cust</ValueStr>
       </AxTableRelationConstraint>
     </Constraints>
   </AxTableRelation>
@@ -702,27 +742,47 @@ enums_export <- export_enums(cfg)
 **Vollständiger R-Code:**
 
 ```r
+#' Formatiert einen einzelnen Relation-Constraint als lesbaren String
+#'
+#' Deckt die drei in SalesTable.xml beobachteten Constraint-Typen ab:
+#'  - AxTableRelationConstraintField:        Field = RelatedField (regulaerer Join)
+#'  - AxTableRelationConstraintRelatedFixed: RelatedField auf einen Fixwert eingeschraenkt
+#'  - AxTableRelationConstraintFixed:        eigenes Field auf einen Fixwert eingeschraenkt
+format_relation_constraint <- function(cn) {
+  ctype     <- xml_attr_safe(cn, "type", "AxTableRelationConstraintField")
+  fld       <- xml_text_safe(cn, "Field", "?")
+  rel_fld   <- xml_text_safe(cn, "RelatedField", "?")
+  fixed_val <- xml_text_safe(cn, "ValueStr")
+  if (is.na(fixed_val)) fixed_val <- xml_text_safe(cn, "Value", "?")
+
+  if (grepl("RelatedFixed", ctype)) {
+    sprintf("%s=%s (fix)", rel_fld, fixed_val)
+  } else if (grepl("ConstraintFixed", ctype)) {
+    sprintf("%s=%s (fix)", fld, fixed_val)
+  } else {
+    sprintf("%s=%s", fld, rel_fld)
+  }
+}
+
 #' Extrahiert alle Relations eines <AxTable>-Knotens
 extract_relations <- function(root, table_nm) {
   rel_nodes <- xml_find_all(root, "Relations/AxTableRelation")
 
   map_dfr(rel_nodes, function(rn) {
     constraint_nodes <- xml_find_all(rn, "Constraints/AxTableRelationConstraint")
-
-    field_pairs <- map_chr(constraint_nodes, function(cn) {
-      fld     <- xml_text_safe(cn, "Field", "?")
-      rel_fld <- xml_text_safe(cn, "RelatedField", "?")
-      sprintf("%s=%s", fld, rel_fld)
-    })
+    field_pairs       <- map_chr(constraint_nodes, format_relation_constraint)
+    raw_reltype       <- xml_attr_safe(rn, "type", "AxTableRelationDefault")
 
     tibble(
-      TableName             = table_nm,
-      RelationName          = xml_text_safe(rn, "Name"),
-      RelatedTable          = xml_text_safe(rn, "RelatedTable"),
-      Cardinality           = xml_text_safe(rn, "Cardinality"),
+      TableName               = table_nm,
+      RelationName            = xml_text_safe(rn, "Name"),
+      RelationType            = str_remove(raw_reltype, "^AxTableRelation"),
+      RelatedTable            = xml_text_safe(rn, "RelatedTable"),
+      Cardinality             = xml_text_safe(rn, "Cardinality"),
       RelatedTableCardinality = xml_text_safe(rn, "RelatedTableCardinality"),
-      ConstraintFields      = paste(field_pairs, collapse = "; "),
-      ConstraintCount       = length(constraint_nodes)
+      RelationshipType        = xml_text_safe(rn, "RelationshipType"),
+      ConstraintFields        = paste(field_pairs, collapse = "; "),
+      ConstraintCount         = length(constraint_nodes)
     )
   })
 }
@@ -746,9 +806,10 @@ relations_export <- export_relations(cfg)
 
 **Beispiel der erzeugten CSV-Struktur:**
 
-| TableName | RelationName | RelatedTable | Cardinality | ConstraintFields |
-|-----------|--------------|--------------|-------------|-------------------|
-| CustTable | CustGroup | CustGroup | ZeroMany | CustGroup=CustGroup |
+| TableName | RelationName | RelationType | RelatedTable | RelationshipType | ConstraintFields |
+|-----------|--------------|---------------|--------------|---------------------|-------------------|
+| SalesTable | CustDirectDebitMandate | Default | CustDirectDebitMandate | Association | DirectDebitMandate=RecId |
+| SalesTable | CustMarkupGroup | ForeignKey | MarkupGroup | Association | MarkupGroup=GroupId; Module=MarkupModuleType::Cust (fix) |
 
 ### 6.6 Views (`Views.csv`)
 
@@ -861,6 +922,18 @@ views_export <- export_views(cfg)
 - Die primäre Datenquelle steht **nicht** direkt unter einem Wurzel-`<DataSources>`, sondern unter `<ViewMetadata>/<DataSources>/<AxQuerySimpleRootDataSource>/<Table>` — die zugrunde liegende Query ist als separates eingebettetes Objekt (`ViewMetadata`) modelliert.
 - Zusätzlich vorhanden und bisher nicht dokumentiert: `<Tags>` (freie Schlagworte) und `<PrimaryCompanyContext>` (Feld, das die Gesellschaft/Company der Entity bestimmt).
 
+Eine zweite, deutlich umfangreichere Beispieldatei (`SalesOrderHeaderV2Entity.xml`) bestätigt und ergänzt dies weiter:
+
+- **`<EntityCategory>`** (hier: `Document`) ist jetzt bestätigt vorhanden — in `DocuTypeEntity.xml` fehlte dieses Element schlicht, weshalb es zuvor als unverifiziert galt. Ebenso bestätigt: `<ConfigurationKey>` und `<DeveloperDocumentation>`, dieselben Elemente, die bereits bei Tabellen/Views (6.1/6.6) verifiziert wurden.
+- **`<IsObsolete>`** (hier: `Yes` — diese konkrete Entity ist selbst als veraltet markiert) ist ein bislang nicht dokumentiertes, für die Zielgruppen Migration/Architektur (Kap. 1.3) hochrelevantes Flag: Es warnt davor, neue Integrationen auf eine bereits abgelöste Entity aufzubauen. Alle vier werden ergänzt.
+- **Neu entdeckt — ein von Tabellen-Relations (6.5) komplett getrenntes Konzept:** Data Entities besitzen ein eigenes `<Relations>`-Element mit `AxDataEntityViewRelation`-Kindern, das **nicht** auf Tabellen, sondern auf andere **Data Entities** verweist (`<RelatedDataEntity>`, nicht `<RelatedTable>`; Constraints als `AxDataEntityViewRelationConstraint`). Dies bildet den OData-Navigationsgraphen zwischen Entities ab (z. B. `SalesOrderHeaderV2Entity → DimensionSetEntity`, `→ SalesOrderOriginEntity`, `→ ProjectEntity`) und ist damit direkt relevant für die BI-/Data-Catalog-Zielgruppe. Eine vollständige Extraktion analog zu `extract_relations()` (6.5) würde eine eigene Datei (`DataEntityRelations.csv`) rechtfertigen — siehe Kap. 8 Weiterentwicklung. Hier wird zunächst nur die Anzahl mitgezählt (`RelatedEntityCount`).
+>
+> **Dritte reale Datei bestätigt diese Struktur weiter (`SalesOrderLineV3Entity.xml`, 5 Entity-Relations):** Alle Elemente (`Cardinality`, `RelatedDataEntityCardinality`, `RelationshipType`, `RelatedDataEntityRole`, `Role`, `UseDefaultRoleNames`, `Validate`, `Constraints`) folgen exakt demselben Muster wie in `SalesOrderHeaderV2Entity.xml` — keine Korrektur nötig. Bemerkenswert: Auch auf Entity-Ebene tritt der Wert **`Composition`** auf (`RelationshipType` der Relations `SalesOrderHeader`, `SalesOrderHeaderV2`, `SalesOrderHeaderV3`) — dieselbe Kopf-Positionen-Beziehung, die zuvor nur auf Tabellenebene (`SalesLine → SalesTable`, siehe 6.5) beobachtet wurde, spiegelt sich hier konsistent auf Entity-Ebene wider (`SalesOrderLineV3Entity → SalesOrderHeaderEntity`/`V2`/`V3`).
+>
+> **Vierte, sehr umfangreiche Datei bestätigt die Struktur erneut vollständig (`EcoResReleasedProductV2Entity.xml`, ca. 60 Entity-Relations):** Keine Korrektur nötig. Eine zusätzliche, bisher nur am Rand aufgetauchte Facette wird hier deutlich: Das optionale `<Key>`-Element innerhalb einer `AxDataEntityViewRelation` verweist **nicht zwingend auf `EntityKey`**, sondern kann jeden auf der Zielentität definierten Key referenzieren (hier u. a. `ProductColorKey`, `ProductSizeKey`, `ProductStyleKey`, `ProductVersionKey`, `UnitSymbolKey`, `WarehouseKey`, `SequenceGroupKey`, `ProductGroupKey`) — analog zum bereits dokumentierten `<PrimaryKey>`-Mechanismus (Auflösung über die `Keys`-Sammlung der *Zielentität*, nicht dieser Entity). Ein weiterer Beleg dafür, dass eine künftige vollständige Extraktion (siehe 8.7) mehr als nur `Field`/`RelatedField` berücksichtigen müsste. Vereinzelt tritt zudem ein leeres `<Constraints />` auf (`WhsBatchDetailsCapturePolicyEntity`) — auch dieser Randfall bricht nichts, da die aktuelle `RelatedEntityCount`-Zählung constraint-unabhängig ist.
+- **Bestätigt den `JoinRelationName`-Mechanismus aus 6.5 mit echtem XML statt nur einem Visual-Studio-Screenshot:** Die eingebettete Datenquelle `CustDirectDebitMandate` in `ViewMetadata` dieser Datei lautet exakt `<JoinRelationName>CustDirectDebitMandate</JoinRelationName>` ohne `Field`/`RelatedField` — identisch zu dem, was das VS-Eigenschaftenfenster in der früher gezeigten Konversation für dieselbe Data Source anzeigte. Die Datei zeigt zudem, dass dieses Muster **keine Ausnahme, sondern der Regelfall** ist: mindestens sieben weitere eingebettete Datenquellen (`TMSSalesTable`, `CreditNoteReasonTableRef`, `SalesPurchOperationType_BR`, `FiscalDocumentType_BR`, `TransportationDocument`, `SalesTable_BR`, `WHSFulfillmentPolicy`) verwenden ebenfalls `JoinRelationName` statt inline `Field`/`RelatedField`.
+- Zusätzlich beobachtet, aber weiterhin nicht extrahiert (siehe Feldebene-Hinweis unten): ein dritter `AxDataEntityViewField`-Subtyp, `AxDataEntityViewUnmappedFieldEnum`, mit `<ComputedFieldMethod>` (Name der X++-Berechnungsmethode) statt `DataField`/`DataSource`.
+
 **Verwendete XML-Struktur (Auszug, gekürzt aus `DocuTypeEntity.xml`):**
 
 ```xml
@@ -937,6 +1010,8 @@ export_data_entities <- function(cfg) {
       NA_character_
     }
 
+    related_entity_count <- length(xml_find_all(root, "Relations/AxDataEntityViewRelation"))
+
     tibble(
       EntityName                = xml_text_safe(root, "Name"),
       Modules                   = xml_text_safe(root, "Modules"),
@@ -945,13 +1020,18 @@ export_data_entities <- function(cfg) {
       PublicEntityName          = xml_text_safe(root, "PublicEntityName"),
       PublicCollectionName      = xml_text_safe(root, "PublicCollectionName"),
       Label                     = xml_text_safe(root, "Label"),
+      EntityCategory            = xml_text_safe(root, "EntityCategory"),
+      ConfigurationKey          = xml_text_safe(root, "ConfigurationKey"),
+      DeveloperDocumentation    = xml_text_safe(root, "DeveloperDocumentation"),
+      IsObsolete                = xml_text_safe(root, "IsObsolete", "No"),
       PrimaryTable              = primary_table,
       PrimaryKeyName            = primary_key_name,
       PrimaryKeyFields          = pk_fields,
       PrimaryCompanyContext     = xml_text_safe(root, "PrimaryCompanyContext"),
       DataManagementEnabled     = xml_text_safe(root, "DataManagementEnabled", "No"),
       IsPublic                  = xml_text_safe(root, "IsPublic", "No"),
-      DataManagementStagingTable = xml_text_safe(root, "DataManagementStagingTable")
+      DataManagementStagingTable = xml_text_safe(root, "DataManagementStagingTable"),
+      RelatedEntityCount        = related_entity_count
     )
   })
 
@@ -962,13 +1042,16 @@ export_data_entities <- function(cfg) {
 data_entities_export <- export_data_entities(cfg)
 ```
 
-> **Feldebene (optionale Erweiterung):** Jede Data Entity enthält zusätzlich eine vollständige `Fields`-Liste (`AxDataEntityViewField`, polymorph über `i:type`: gemappte Felder vom Typ `AxDataEntityViewMappedField` mit `DataField`/`DataSource`, sowie berechnete/unberechnete Zusatzfelder wie `AxDataEntityViewUnmappedFieldString` mit `ExtendedDataType`/`IsComputedField`). Diese Feldebene ist nicht Teil von `DataEntities.csv` (das bleibt bewusst auf Entity-Kopfebene), ließe sich aber nach demselben Muster wie `extract_fields()` (6.2) als eigener Export `DataEntityFields.csv` ergänzen — siehe Kap. 8 Weiterentwicklung.
+> **Feldebene (optionale Erweiterung):** Jede Data Entity enthält zusätzlich eine vollständige `Fields`-Liste (`AxDataEntityViewField`, polymorph über `i:type`: gemappte Felder vom Typ `AxDataEntityViewMappedField` mit `DataField`/`DataSource`, sowie berechnete/unberechnete Zusatzfelder wie `AxDataEntityViewUnmappedFieldString`/`AxDataEntityViewUnmappedFieldEnum` mit `ExtendedDataType`/`ComputedFieldMethod`). Diese Feldebene ist nicht Teil von `DataEntities.csv` (das bleibt bewusst auf Entity-Kopfebene), ließe sich aber nach demselben Muster wie `extract_fields()` (6.2) als eigener Export `DataEntityFields.csv` ergänzen — siehe Kap. 8 Weiterentwicklung.
+>
+> **Entity-zu-Entity-Relations (optionale Erweiterung):** `RelatedEntityCount` zählt nur, wie viele `AxDataEntityViewRelation`-Einträge vorhanden sind. Eine vollständige Auflösung (Zielentität, Kardinalität, Constraint-Felder) ließe sich analog zu `extract_relations()` (6.5) als eigener Export `DataEntityRelations.csv` ergänzen — siehe Kap. 8 Weiterentwicklung.
 
 **Beispiel der erzeugten CSV-Struktur:**
 
-| EntityName | Modules | FormRef | Tags | PublicEntityName | PublicCollectionName | PrimaryTable | PrimaryKeyFields | DataManagementEnabled |
-|------------|---------|---------|------|-------------------|------------------------|--------------|----------------------|--------------------------|
-| DocuTypeEntity | SystemAdministration | DocuType | Documents | DocumentType | DocumentTypes | DocuType | ID | Yes |
+| EntityName | Modules | EntityCategory | IsObsolete | PublicEntityName | PublicCollectionName | PrimaryTable | PrimaryKeyFields | RelatedEntityCount |
+|------------|---------|------------------|------------|-------------------|------------------------|--------------|----------------------|----------------------|
+| SalesOrderHeaderV2Entity | SalesAndMarketing | Document | Yes | SalesOrderHeaderV2 | SalesOrderHeadersV2 | SalesTable | SalesOrderNumber | 3 |
+| DocuTypeEntity | SystemAdministration | | No | DocumentType | DocumentTypes | DocuType | ID | 0 |
 
 ### 6.8 Indizes (`Indexes.csv`)
 
@@ -1285,6 +1368,13 @@ Verknüpfung des Dictionarys mit Quellsystem-Mappingtabellen (Quellfeld → Ziel
 ### 8.6 KI-/RAG-Wissensdatenbank
 
 Aufbau einer Retrieval-Augmented-Generation-Wissensbasis auf Basis der zehn CSV-Dateien (Chunking je Tabelle/Feld, Embeddings, Vektor-Index), um Fachfragen zum D365-Datenmodell ("Welche Tabelle enthält Feld X?", "Was passiert beim Löschen von Y?") über ein Sprachmodell direkt beantworten zu können.
+
+### 8.7 Vertiefung der Data-Entity-Ebene
+
+Zwei in Kap. 6.7 identifizierte, bislang nur an der Datenstruktur erkannte, aber nicht extrahierte Ebenen:
+
+- **`DataEntityFields.csv`** — vollständige Feldliste je Data Entity (analog `extract_fields()`, 6.2), inkl. Unterscheidung gemappter Felder (`DataField`/`DataSource`) von berechneten Zusatzfeldern (`ComputedFieldMethod`).
+- **`DataEntityRelations.csv`** — vollständige Auflösung der Entity-zu-Entity-Relations (`AxDataEntityViewRelation`/`AxDataEntityViewRelationConstraint`, analog `extract_relations()`, 6.5), die aktuell nur als Anzahl (`RelatedEntityCount`) in `DataEntities.csv` erscheinen. Damit ließe sich der OData-Navigationsgraph zwischen Data Entities vollständig abbilden — relevant für Data-Catalog- und BI-Auswertungen, die auf Entity- statt auf Tabellenebene navigieren.
 
 ---
 
