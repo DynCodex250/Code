@@ -1,536 +1,372 @@
 ---
-title: "Dynamics 365 Lizenzmanagement über Azure AD Sicherheitsgruppen"
-subtitle: "D365Licensing – Playbook"
-author: "Cedric Kameni"
-date: "`r Sys.Date()`"
 output:
-  word_document:
-    default
-  html_document:
-    toc: true
-    toc_float: true
-    toc_depth: 3
-    theme: flatly
-    highlight: kate
-    df_print: paged
+  word_document: default
+  html_document: default
 ---
+# Dokumentation: Batch-Historie-Auswertung (D365 Finance & Operations)
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(eval = FALSE, echo = TRUE)
-```
+**Autor:** Cedric Kameni  
+**Bereich:** D365 Systemadministration  
+**Zweck:** Grundlage für Power-BI-Bericht zur Speicher- und Statusauswertung der Batch-Historie
 
 ---
-
-# Ziel
-
-Dieses Dokument beschreibt die Verwaltung der Dynamics 365 Lizenzen über Azure
-AD Sicherheitsgruppen, den Export der Gruppenmitglieder, die Zuordnung zu den
-tatsächlichen Lizenz-SKUs sowie die Konsolidierung der Exportdaten mittels R.
-
----
-
-# Überblick
-
-Die Lizenzvergabe für Dynamics 365 Finance & Supply Chain Management erfolgt
-über dedizierte Azure AD Sicherheitsgruppen.
-
-Jede Sicherheitsgruppe ist mit einer entsprechenden Lizenzkonfiguration in
-Entra ID verknüpft. Sobald ein Benutzer einer Gruppe hinzugefügt wird, erhält
-er automatisch die zugehörigen Dynamics 365 Lizenz-SKUs.
-
-## Verwendete Sicherheitsgruppen
-
-| Sicherheitsgruppe | Lizenzzuordnung (SKU) |
-|--------------------|------------------------|
-| `AAD_LIC_D365-FI` | Finance Base |
-| `AAD_LIC_D365-SCM` | SCM Base |
-| `AAD_LIC_D365-FI-ATTACH` | SCM Base + Finance Attached |
-| `AAD_LIC_D365-SCM-ATTACH` | Finance Base + SCM Attached |
-| `AAD_LIC_D365-TEAM` | Team Member |
-| `AAD_LIC_D365-ACTIVITY` | Activity |
-
-Die kurzen SKU-Bezeichnungen (`Finance Base`, `SCM Base`, `Finance Attached`,
-`SCM Attached`, `Team Member`, `Activity`) sind dieselben, die in der
-Mapping-Datei `LicenseGroups.xlsx` (siehe unten) verwendet werden — so bleibt
-die Benennung über Dokumentation, Mapping-Datei und R-Auswertung konsistent.
-
----
-
-# Lizenzgruppen
-
-## AAD_LIC_D365-FI
-
-Benutzer dieser Gruppe erhalten **ausschließlich**:
-
-- Finance Base
-
-## AAD_LIC_D365-SCM
-
-Benutzer dieser Gruppe erhalten **ausschließlich**:
-
-- SCM Base
-
-## AAD_LIC_D365-FI-ATTACH
-
-Benutzer dieser Gruppe erhalten:
-
-- SCM Base
-- Finance Attached
-
-## AAD_LIC_D365-SCM-ATTACH
-
-Benutzer dieser Gruppe erhalten:
-
-- Finance Base
-- SCM Attached
-
-## AAD_LIC_D365-TEAM
-
-Benutzer dieser Gruppe erhalten:
-
-- Team Member
-
-## AAD_LIC_D365-ACTIVITY
-
-Benutzer dieser Gruppe erhalten:
-
-- Activity
-
----
-
-# Ermittlung der tatsächlichen Lizenzzuordnung
-
-Da Benutzer Mitglied mehrerer Gruppen sein können, muss zur Analyse der
-effektiven Lizenzzuordnung zunächst die Mitgliederliste jeder Lizenzgruppe
-exportiert werden.
-
-## Export aus Entra ID
-
-Für jede Lizenzgruppe:
-
-1. Gruppe in Entra ID öffnen
-2. **Members** auswählen
-3. **Export Members** auswählen
-4. CSV herunterladen
-
-Beispiel-Dateinamen (Gruppenname + Exportdatum als Suffix):
-
-```text
-exportGroupMembers_2026-09-11_AAD_LIC_D365-FI.csv
-exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM.csv
-exportGroupMembers_2026-09-11_AAD_LIC_D365-FI-ATTACH.csv
-exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM-ATTACH.csv
-exportGroupMembers_2026-09-11_AAD_LIC_D365-TEAM.csv
-exportGroupMembers_2026-09-11_AAD_LIC_D365-ACTIVITY.csv
-```
-
----
-
-# Ablagestruktur
-
-Die Rohexporte liegen direkt in `Data\`, die vom Skript erzeugten Ergebnisse in
-`Data\Final\`. Das Ergebnisverzeichnis wird beim Ausführen des R-Skripts
-automatisch angelegt, falls es noch nicht existiert (siehe `dir.create()` im
-Abschnitt „Arbeitsverzeichnis definieren").
-
-```text
-Licensing\Data\
-├── exportGroupMembers_2026-09-11_AAD_LIC_D365-FI.csv
-├── exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM.csv
-├── exportGroupMembers_2026-09-11_AAD_LIC_D365-FI-ATTACH.csv
-├── exportGroupMembers_2026-09-11_AAD_LIC_D365-SCM-ATTACH.csv
-├── exportGroupMembers_2026-09-11_AAD_LIC_D365-TEAM.csv
-├── exportGroupMembers_2026-09-11_AAD_LIC_D365-ACTIVITY.csv
-└── Final\
-    ├── D365_All_License_Assignments.xlsx
-    └── D365_User_License_Overview.xlsx
-```
-
-## Konfigurationsdateien (Mapping + Preise)
-
-Zusätzlich zu den Rohexporten werden zwei Konfigurationsdateien benötigt, in
-einem eigenen Verzeichnis getrennt von den (vergänglichen) Rohexporten:
-
-```text
-Licensing\Config\LicenseGroups.xlsx
-Licensing\Config\skuPrices.xlsx
-```
-
-- `LicenseGroups.xlsx` — Zuordnung der Azure AD Gruppen zu den tatsächlichen
-  Dynamics-Lizenz-SKUs.
-- `skuPrices.xlsx` — Kosten je SKU (Spalte `Price`).
-
-Im Unterschied zu den Gruppenexporten sind das **keine Rohdaten-Exporte**,
-sondern gepflegte Fachlogik (welche Gruppe steht für welche SKU, was kostet
-welche SKU) und sollten entsprechend versioniert/gesichert werden, wenn sich
-Gruppen oder Preise ändern.
-
----
-
-# Datenkonsolidierung mit R
 
 ## Ziel
 
-Die CSV-Dateien sollen:
+Die Batch-Historie (`BATCHHISTORY`) speichert alle vergangenen Batch-Jobausführungen im D365-System. Mit der Zeit wächst diese Tabelle erheblich und belegt signifikanten Datenbankspeicher.
 
-1. automatisch eingelesen werden
-2. zu einer Gesamttabelle zusammengeführt werden
-3. um eine zusätzliche Spalte `LicenseGroup` erweitert werden
-4. über die Mapping-Datei den tatsächlichen Lizenz-SKUs zugeordnet werden
-5. über die Preistabelle mit den Lizenzkosten verknüpft werden
-6. als Gesamt-, Benutzer- und Kostenübersicht (je SKU **und** je Benutzer)
-   bereitgestellt werden — **als Excel-Dateien**, nicht als CSV
+Die folgenden Abfragen dienen dazu:
 
-## Benötigte Pakete
+- einen Überblick über Anzahl und Speicherverbrauch nach Batch-Status zu gewinnen
+- den Anteil historischer vs. aktueller Datensätze sichtbar zu machen
+- die **10 Batch-Jobs mit dem höchsten Historienvolumen** zu identifizieren
+- die **tatsächliche Tabellengröße** auf Datenbankebene zu ermitteln
+- Entscheidungsgrundlagen für **Archivierung und Bereinigung** zu liefern
 
-```{r install-packages}
-install.packages(c("tidyverse", "readxl", "writexl"))
-```
+Die Ergebnisse werden in einem **Power-BI-Bericht** visualisiert, der sowohl IT- als auch Fachentscheidungen unterstützt.
 
-## Bibliotheken laden
+### Umgebungshinweis
 
-```{r libraries}
-library(tidyverse)
-library(readxl)
-library(writexl)
-```
+Die SQL-Auswertungen sollen auf einer **PROD-nahen Datenbank** erfolgen, um realistische Ergebnisse zu erhalten. Hierfür wird zeitnah ein aktueller **PROD-Datenbankabzug auf TST** eingespielt.
 
-## Arbeitsverzeichnis definieren
-
-`data_path` ist das Verzeichnis, in das die Entra-ID-CSV-Exporte abgelegt
-werden. `export_path` (`Data/Final/`) ist das Ausgabeverzeichnis für die vom
-Skript erzeugten Excel-Dateien und wird per `dir.create()` automatisch
-angelegt, falls es noch nicht existiert. `config_path` zeigt auf die beiden
-Mapping-/Preis-Dateien.
-
-```{r paths}
-data_path   <- "C:/Users/ckam_admin/Documents/RProjects/Licensing/Data/"
-export_path <- paste0(data_path, "Final/")
-dir.create(export_path, showWarnings = FALSE, recursive = TRUE)
-
-config_path <- "C:/Users/ckam_admin/Documents/RProjects/Licensing/Config/"
-```
-
-## CSV-Dateien einlesen und zusammenführen
-
-```{r consolidate}
-files <- list.files(
-  data_path,
-  pattern    = "\\.csv$",
-  full.names = TRUE
-)
-
-# Gruppenname aus dem Dateinamen extrahieren
-# exportGroupMembers_2026-09-11_AAD_LIC_D365-FI.csv -> "AAD_LIC_D365-FI"
-extract_group <- function(filename) {
-  stringr::str_extract(
-    basename(filename),
-    "AAD_LIC_D365.*(?=\\.csv)"
-  )
-}
-
-license_members <- purrr::map_dfr(files, function(file) {
-  df <- readr::read_csv(file, show_col_types = FALSE)
-  df$LicenseGroup <- extract_group(file)
-  df
-})
-```
-
-## Ergebnis prüfen
-
-```{r check}
-dplyr::glimpse(license_members)
-dplyr::count(license_members, LicenseGroup)
-```
-
-## Export Rohdaten
-
-Alle von diesem Skript erzeugten Ausgabedateien sind **Excel-Dateien
-(`.xlsx`)**, keine CSV — auch die Rohdaten-Ablage.
-
-```{r export-raw}
-writexl::write_xlsx(
-  list(group_members = license_members),
-  file.path(export_path, "D365_All_License_Assignments.xlsx")
-)
-```
-
-## Lizenz-Mapping laden
-
-Die Datei `LicenseGroups.xlsx` enthält die Zuordnung zwischen Sicherheitsgruppen
-und den tatsächlich vergebenen Lizenz-SKUs — **eine Zeile je Gruppe + SKU**.
-Gruppen mit zwei Lizenzen (`*-ATTACH`) erscheinen entsprechend zweimal.
-
-```{r load-mapping}
-license_sku <- readxl::read_excel(
-  file.path(config_path, "LicenseGroups.xlsx")
-)
-```
-
-Beispiel-Inhalt:
-
-| LicenseGroups | SKU |
-|---------------|-----|
-| `AAD_LIC_D365-FI` | Finance Base |
-| `AAD_LIC_D365-SCM` | SCM Base |
-| `AAD_LIC_D365-FI-ATTACH` | SCM Base |
-| `AAD_LIC_D365-FI-ATTACH` | Finance Attached |
-| `AAD_LIC_D365-SCM-ATTACH` | Finance Base |
-| `AAD_LIC_D365-SCM-ATTACH` | SCM Attached |
-| `AAD_LIC_D365-TEAM` | Team Member |
-| `AAD_LIC_D365-ACTIVITY` | Activity |
-
-## Ermittlung der tatsächlichen Lizenz-SKUs
-
-Der Join ist bewusst `many-to-many`: eine `*-ATTACH`-Gruppe liefert zwei
-SKU-Zeilen je Benutzer.
-
-```{r resolve-skus}
-license_detailed <- license_members |>
-  dplyr::left_join(
-    license_sku,
-    by           = c("LicenseGroup" = "LicenseGroups"),
-    relationship = "many-to-many"
-  )
-```
-
-## Lizenzkosten laden
-
-Die Datei `skuPrices.xlsx` enthält die Kosten je SKU in der Spalte `Price`
-(z. B. der monatliche Preis pro Lizenz) — **eine Zeile je SKU**. Sie wird
-genauso geladen wie `LicenseGroups.xlsx`.
-
-```{r load-prices}
-sku_Prices <- readxl::read_excel(
-  file.path(config_path, "skuPrices.xlsx")
-)
-```
-
-Beispiel-Inhalt (Platzhalterwerte — durch die tatsächlichen Preise aus dem
-Lizenzvertrag ersetzen):
-
-| SKU | Price |
-|-----|-------|
-| Finance Base | 180 |
-| SCM Base | 180 |
-| Finance Attached | 30 |
-| SCM Attached | 30 |
-| Team Member | 8 |
-| Activity | 3 |
-
-## Kosten je Zuweisung ermitteln
-
-```{r resolve-costs}
-license_costs <- license_detailed |>
-  dplyr::left_join(sku_Prices, by = "SKU")
-```
-
-`license_costs` hat eine Zeile je Benutzer + SKU (inkl. `Price`) und ist die
-Grundlage für **beide** folgenden Kostenauswertungen: je Benutzer und je SKU.
-
-## Benutzerübersicht erzeugen
-
-Für jeden Benutzer werden sämtliche Lizenzgruppen, die zugehörigen SKUs und
-die daraus resultierenden monatlichen Gesamtkosten zusammengefasst.
-
-```{r overview}
-license_overview <- license_costs |>
-  dplyr::group_by(userPrincipalName) |>
-  dplyr::summarise(
-    LicenseGroups    = paste(sort(unique(LicenseGroup)), collapse = "; "),
-    SKUs             = paste(sort(unique(SKU)),          collapse = "; "),
-    TotalMonthlyCost = sum(Price, na.rm = TRUE),
-    .groups          = "drop"
-  )
-```
-
-## Qualitätskontrolle
-
-Verteilung der SKU-Kombinationen über alle Benutzer — auffällige oder
-unerwartete Kombinationen sind ein Hinweis auf Gruppenzuordnungen, die geprüft
-werden sollten.
-
-```{r quality-check}
-license_overview |>
-  dplyr::count(SKUs, sort = TRUE)
-```
-
-## Kosten je Benutzer
-
-Schlanke, nach Kosten absteigend sortierte Auswertung — die direkte Antwort
-auf "wie viel kostet Benutzer X pro Monat, und wodurch". Im Unterschied zu
-`user_overview` (oben) enthält diese Tabelle zusätzlich eine
-`LicenseBreakdown`-Spalte, die genau aufschlüsselt, aus welchen SKUs sich die
-Gesamtkosten zusammensetzen, z. B.:
-
-```text
-1 SCM Base X 168,5 + 1 Finance Attached X 28,1
-```
-
-Ein Term je SKU: `<Anzahl> <SKU> X <Preis>` (Komma als Dezimaltrennzeichen),
-mehrere Terme mit `+` verbunden. `<Anzahl>` ist normalerweise `1` (eine
-Gruppenmitgliedschaft = eine SKU), kann aber >1 sein, falls ein Benutzer dieselbe
-SKU über mehrere Lizenzgruppen erhält.
-
-```{r cost-by-user}
-# Ein Term je Benutzer + SKU: "<Anzahl> <SKU> X <Preis>"
-license_line_items <- license_costs |>
-  dplyr::filter(!is.na(SKU)) |>
-  dplyr::count(userPrincipalName, SKU, Price, name = "Anzahl") |>
-  dplyr::arrange(userPrincipalName, SKU) |>
-  dplyr::mutate(
-    LineItem = paste0(
-      Anzahl, " ", SKU, " X ",
-      formatC(Price, format = "f", digits = 1, decimal.mark = ",")
-    )
-  ) |>
-  dplyr::group_by(userPrincipalName) |>
-  dplyr::summarise(
-    LicenseBreakdown = paste(LineItem, collapse = " + "),
-    .groups          = "drop"
-  )
-
-# TotalMonthlyCost weiterhin über ALLE Zeilen (auch Benutzer ohne SKU-Mapping,
-# die sonst aus license_line_items herausfallen wuerden)
-cost_by_user <- license_costs |>
-  dplyr::group_by(userPrincipalName) |>
-  dplyr::summarise(
-    TotalMonthlyCost = sum(Price, na.rm = TRUE),
-    .groups           = "drop"
-  ) |>
-  dplyr::left_join(license_line_items, by = "userPrincipalName") |>
-  dplyr::select(userPrincipalName, LicenseBreakdown, TotalMonthlyCost) |>
-  dplyr::arrange(dplyr::desc(TotalMonthlyCost))
-
-cat("Benutzer mit Lizenzkosten:", nrow(cost_by_user), "\n")
-cat("Monatliche Gesamtkosten aller Benutzer:",
-    sum(cost_by_user$TotalMonthlyCost, na.rm = TRUE), "\n")
-```
-
-`LicenseBreakdown` ist `NA`, wenn keine der Lizenzgruppen des Benutzers in
-`LicenseGroups.xlsx` auf eine SKU abgebildet werden konnte (`TotalMonthlyCost`
-ist dann `0`) — ein Hinweis auf eine fehlende Mapping-Zeile.
-
-## Kosten je SKU (Kostentreiber)
-
-Zeigt, wie viele Benutzer je SKU lizenziert sind und welche Gesamtkosten daraus
-entstehen — die Antwort auf "welche Lizenz verursacht wie viele Kosten".
-
-```{r cost-by-sku}
-cost_by_sku <- license_costs |>
-  dplyr::count(SKU, name = "Anzahl") |>
-  dplyr::left_join(sku_Prices, by = "SKU") |>
-  dplyr::mutate(TotalMonthlyCost = Anzahl * Price) |>
-  dplyr::arrange(dplyr::desc(TotalMonthlyCost))
-
-cat("Monatliche Gesamtkosten aller Lizenzen:",
-    sum(cost_by_sku$TotalMonthlyCost, na.rm = TRUE), "\n")
-```
-
-`sum(cost_by_user$TotalMonthlyCost)` und `sum(cost_by_sku$TotalMonthlyCost)`
-müssen übereinstimmen — beide summieren dieselben Zeilen aus `license_costs`,
-nur nach unterschiedlichen Dimensionen gruppiert. Eine Abweichung wäre ein
-Hinweis auf einen Fehler in einer der beiden Gruppierungen.
-
-## Export der Ergebnisse
-
-```{r export-results}
-writexl::write_xlsx(
-  list(
-    group_members    = license_members,
-    license_detailed = license_detailed,
-    user_overview    = license_overview,
-    cost_by_user     = cost_by_user,
-    cost_by_sku      = cost_by_sku
-  ),
-  file.path(export_path, "D365_User_License_Overview.xlsx")
-)
-```
 
 ---
 
-# Ergebnis
+## Hintergrundinformation: Status-Werte in BATCHHISTORY
 
-Nach Ausführung des Skripts stehen zwei **Excel-Dateien** in `Data\Final\` zur
-Verfügung (keine CSV):
+Die Spalte `STATUS` ist eine numerische Kennzahl. Die folgende Tabelle zeigt die Bedeutung der Werte:
 
-## D365_All_License_Assignments.xlsx
+| Status | Bezeichnung | Bedeutung |
+|--------|-------------|-----------|
+| 0 | Withhold | Job zurückgehalten / pausiert |
+| 1 | Waiting | Wartet auf Ausführung |
+| 2 | Executing | Wird aktuell ausgeführt |
+| 3 | Error | Abgeschlossen mit Fehler |
+| 4 | Ended | Erfolgreich abgeschlossen |
+| 5 | Cancelled | Abgebrochen (durch Benutzer oder System) |
+| 7 | Ready | Bereit zur Ausführung |
+| 8 | Canceled | Storniert (alternative Schreibweise) |
 
-Enthält (Arbeitsblatt `group_members`):
-
-- alle exportierten Gruppenmitglieder
-- alle Originalspalten aus Entra ID
-- zusätzliche Spalte `LicenseGroup`
-
-## D365_User_License_Overview.xlsx
-
-### Arbeitsblatt: group_members
-
-Enthält die Rohdaten aus den exportierten Azure AD Gruppen (identisch zu
-`D365_All_License_Assignments.xlsx`).
-
-### Arbeitsblatt: license_detailed
-
-Enthält je Zeile:
-
-- Benutzer
-- Lizenzgruppe
-- tatsächlich zugeordnete SKU
-- Preis dieser SKU
-
-### Arbeitsblatt: user_overview
-
-Enthält:
-
-- jeden Benutzer genau einmal
-- sämtliche zugewiesenen Lizenzgruppen
-- sämtliche zugewiesenen Lizenz-SKUs
-- monatliche Gesamtkosten (`TotalMonthlyCost`)
-- ideale Grundlage für Lizenz-Audits und Compliance-Prüfungen
-
-### Arbeitsblatt: cost_by_user
-
-Enthält je Benutzer:
-
-- `LicenseBreakdown` — Aufschlüsselung der Kosten je SKU, z. B.
-  `1 SCM Base X 168,5 + 1 Finance Attached X 28,1`
-- monatliche Gesamtkosten (`TotalMonthlyCost`)
-- absteigend sortiert — schneller Überblick, welche Benutzer die höchsten
-  Lizenzkosten verursachen und wodurch
-
-### Arbeitsblatt: cost_by_sku
-
-Enthält je SKU:
-
-- Anzahl lizenzierter Benutzer
-- Preis je Lizenz (aus `skuPrices.xlsx`)
-- monatliche Gesamtkosten dieser SKU über alle Benutzer
-
-— zeigt auf einen Blick, welche Lizenz die höchsten Kosten verursacht.
+> **Hinweis:** Status 4 (Ended) macht in der Regel den größten Teil der Historie aus und ist der Haupttreiber für den Speicherverbrauch.
 
 ---
 
-# Betriebliches Vorgehen
+## Abfrage 1: Batch-Historie nach Status
 
-Empfohlener Ablauf:
+### SQL-Abfrage
 
-1. „Members" jeder Lizenzgruppe aus Entra ID exportieren
-2. CSV-Dateien im Verzeichnis `Data\` ablegen
-3. `LicenseGroups.xlsx` und `skuPrices.xlsx` in `Config\` aktuell halten,
-   falls sich Gruppe-zu-SKU-Zuordnung oder Lizenzpreise ändern
-4. R-Skript ausführen (`Data\Final\` wird bei Bedarf automatisch angelegt)
-5. Konsolidierte Excel-Dateien erzeugen
-6. Lizenzzuordnungen, Kosten je Benutzer/SKU und Qualitätskontrolle prüfen,
-   Auffälligkeiten korrigieren
+
+```{sql connection=cnn}
+SELECT
+    STATUS,
+    CASE STATUS
+        WHEN 0 THEN 'Withhold'
+        WHEN 1 THEN 'Waiting'
+        WHEN 2 THEN 'Executing'
+        WHEN 3 THEN 'Error'
+        WHEN 4 THEN 'Ended'
+        WHEN 5 THEN 'Cancelled'
+        WHEN 7 THEN 'Ready'
+        WHEN 8 THEN 'Canceled'
+        ELSE CONCAT('Unknown (', STATUS, ')')
+    END AS StatusName,
+    COUNT(*) AS RecordCount,
+    CAST(
+        SUM(
+            DATALENGTH(RECID)
+            + DATALENGTH(CREATEDDATETIME)
+            + DATALENGTH(COMPANY)
+            + DATALENGTH(CAPTION)
+        ) / 1024.0 / 1024.0
+        AS DECIMAL(18,2)
+    ) AS SizeMB
+FROM BATCHHISTORY
+GROUP BY STATUS
+ORDER BY RecordCount DESC;
+```
+
+### Beschreibung
+
+Diese Abfrage analysiert die Tabelle `BATCHHISTORY` und gruppiert alle Datensätze nach ihrem Batch-Status. Für jede Statusgruppe werden zwei Kennzahlen ermittelt: die Anzahl der Datensätze und der geschätzte Speicherverbrauch.
+
+### Kennzahlen
+
+#### RecordCount
+Anzahl der Datensätze in der Batch-Historie mit dem jeweiligen Status.
+
+**Beispiel:** `Status = Ended, RecordCount = 2.500.000` bedeutet, dass 2,5 Millionen Batch-Ausführungen erfolgreich abgeschlossen wurden und weiterhin in der Historie gespeichert sind.
+
+#### SizeMB
+Geschätzter Speicherverbrauch der Datensätze je Status in Megabyte.
+
+Die Berechnung basiert auf den Spalten:
+- `RECID` — eindeutiger Datensatzschlüssel
+- `CREATEDDATETIME` — Erstellungszeitpunkt
+- `COMPANY` — Mandant
+- `CAPTION` — Beschriftung / Jobbezeichnung
+
+> Die Berechnung über `DATALENGTH()` liefert eine **Schätzung** des belegten Speichers für die ausgewählten Spalten. Der tatsächliche Speicherbedarf auf Datenbankebene (inkl. Indizes, Seiten-Overhead) ist höher. Der Wert dient als relativer Vergleich zwischen den Statusgruppen.
+
+### Fachliche Interpretation
+
+Mit dieser Auswertung kann beantwortet werden:
+
+- Welche Status kommen am häufigsten vor?
+- Welche Status verursachen den größten Speicherverbrauch?
+- Wie hoch ist der Anteil erfolgreich abgeschlossener Batch-Jobs?
+- Wie viele fehlerhafte Ausführungen befinden sich in der Historie?
+- Welche Statusgruppen eignen sich für Archivierungs- oder Bereinigungsmaßnahmen?
+
+### Beispielhafte Ausgabe
+
+| STATUS | StatusName | RecordCount | SizeMB |
+|--------|------------|-------------|--------|
+| 4 | Ended | 2.500.000 | 980 |
+| 3 | Error | 18.000 | 9 |
+| 5 | Cancelled | 5.000 | 2 |
+
+**Interpretation:** Error-Datensätze sind zwar zahlenmäßig gering, sollten aber separat überwacht werden, um wiederkehrende Fehler zu identifizieren. Der Status "Ended" repräsentiert typischerweise das größte Volumen und ist der Haupttreiber für den Speicherverbrauch.
 
 ---
 
-# Versionierung
+## Abfrage 2: Batch-Historie nach Status und Alter
 
-| Version | Datum | Beschreibung |
-|---------|------------|--------------|
-| 1.0 | 11.09.2026 | Initiale Erstellung des Playbooks |
-| 1.1 | 12.09.2026 | Lizenz-Mapping (`LicenseGroups.xlsx`) und Ermittlung der tatsächlichen SKUs ergänzt |
-| 1.2 | 12.09.2026 | Lizenzkosten (`skuPrices.xlsx`, `cost_by_sku`) ergänzt; alle Ausgabedateien von CSV auf Excel (`.xlsx`) umgestellt |
-| 1.3 | 12.09.2026 | Explizite Kosten je Benutzer (`cost_by_user`); Pfade auf reale Arbeitsumgebung (`Data`/`Final`/`Config`) umgestellt, `dir.create()` reaktiviert |
-| 1.4 | 13.09.2026 | `cost_by_user` um `LicenseBreakdown` erweitert (Aufschlüsselung je SKU, z. B. `1 SCM Base X 168,5 + 1 Finance Attached X 28,1`) |
+### SQL-Abfrage
+
+```{sql connection=cnn}
+SELECT
+    STATUS,
+    CASE STATUS
+        WHEN 0 THEN 'Withhold'
+        WHEN 1 THEN 'Waiting'
+        WHEN 2 THEN 'Executing'
+        WHEN 3 THEN 'Error'
+        WHEN 4 THEN 'Ended'
+        WHEN 5 THEN 'Cancelled'
+        WHEN 7 THEN 'Ready'
+        WHEN 8 THEN 'Canceled'
+        ELSE CONCAT('Unknown (', STATUS, ')')
+    END AS StatusName,
+    CASE
+        WHEN CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())
+            THEN 'Last 2 Months'
+        ELSE 'Older than 2 Months'
+    END AS DateGroup,
+    COUNT(*) AS RecordCount,
+    CAST(
+        SUM(
+            DATALENGTH(RECID)
+            + DATALENGTH(CREATEDDATETIME)
+            + DATALENGTH(COMPANY)
+            + DATALENGTH(CAPTION)
+        ) / 1024.0 / 1024.0
+        AS DECIMAL(18,2)
+    ) AS SizeMB
+FROM BATCHHISTORY
+GROUP BY
+    STATUS,
+    CASE
+        WHEN CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())
+            THEN 'Last 2 Months'
+        ELSE 'Older than 2 Months'
+    END
+ORDER BY
+    STATUS,
+    DateGroup;
+```
+
+### Beschreibung
+
+Diese Abfrage erweitert die erste Analyse um eine zeitliche Dimension. Alle Datensätze werden in zwei Altersgruppen eingeteilt:
+
+**Letzte 2 Monate** (`Last 2 Months`)  
+Datensätze mit `CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())` — aktuelle operative Historie.
+
+**Älter als 2 Monate** (`Older than 2 Months`)  
+Datensätze, deren Erstellungsdatum mehr als zwei Monate zurückliegt — historische Daten und potenzielle Kandidaten für Archivierung oder Bereinigung.
+
+### Kennzahlen
+
+| Kennzahl | Beschreibung |
+|----------|-------------|
+| `DateGroup` | Altersgruppe: `Last 2 Months` oder `Older than 2 Months` |
+| `RecordCount` | Anzahl der Datensätze je Status und Altersgruppe |
+| `SizeMB` | Geschätzter Speicherverbrauch je Kombination aus Status und Altersgruppe |
+
+### Fachliche Interpretation
+
+- Wie viel der Batch-Historie ist älter als zwei Monate?
+- Welche Status verursachen den größten historischen Datenbestand?
+- Wie groß ist der Speicherverbrauch alter Historieneinträge?
+- Welches Einsparpotenzial ergibt sich durch die Bereinigung älterer Datensätze?
+
+### Beispielhafte Ausgabe
+
+| StatusName | DateGroup | RecordCount | SizeMB |
+|------------|-----------|-------------|--------|
+| Ended | Last 2 Months | 120.000 | 45 |
+| Ended | Older than 2 Months | 2.500.000 | 980 |
+| Error | Last 2 Months | 1.200 | 0,6 |
+| Error | Older than 2 Months | 18.000 | 9 |
+
+**Interpretation:**
+- Nur 120.000 von 2.620.000 abgeschlossenen Ausführungen stammen aus den letzten zwei Monaten (~4,6 %)
+- Der überwiegende Teil der Historie ist älter als zwei Monate
+- Eine Bereinigung älterer Datensätze könnte den Speicherbedarf um ca. 95 % reduzieren, ohne die aktuelle operative Historie zu beeinträchtigen
+
+---
+
+## Abfrage 3: Tatsächliche Tabellengröße (Datenbankebene)
+
+### SQL-Abfrage
+
+```{sql connection=cnn}
+SELECT *
+FROM (
+    SELECT TOP 15
+        s.Name  AS SchemaName,
+        t.Name  AS TableName,
+        p.rows  AS RowCounts,
+        CAST(ROUND((SUM(a.used_pages)  / 128.00), 2) AS NUMERIC(36, 2)) AS Used_MB,
+        CAST(ROUND((SUM(a.total_pages) - SUM(a.used_pages)) / 128.00, 2)
+             AS NUMERIC(36, 2)) AS Unused_MB,
+        CAST(ROUND((SUM(a.total_pages) / 128.00), 2) AS NUMERIC(36, 2)) AS Total_MB
+    FROM sys.tables t
+    INNER JOIN sys.indexes        i ON t.OBJECT_ID  = i.object_id
+    INNER JOIN sys.partitions     p ON i.object_id  = p.OBJECT_ID
+                                   AND i.index_id   = p.index_id
+    INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
+    INNER JOIN sys.schemas        s ON t.schema_id  = s.schema_id
+    GROUP BY t.Name, s.Name, p.Rows
+) T
+WHERE T.TableName = 'batchhistory';
+```
+
+### Beschreibung
+
+Diese Abfrage liest die tatsächliche Tabellengröße direkt aus den SQL-Server-Systemkatalogen (`sys.tables`, `sys.indexes`, `sys.partitions`, `sys.allocation_units`). Anders als die `DATALENGTH()`-Schätzung in Abfrage 1 und 2 liefert sie den **realen Speicherbedarf auf Datenbankebene** — inklusive Indizes und Seiten-Overhead.
+
+### Kennzahlen
+
+| Kennzahl | Beschreibung |
+|----------|-------------|
+| `RowCounts` | Anzahl der Zeilen in der Tabelle laut Partitionsstatistik |
+| `Used_MB` | Tatsächlich genutzter Speicher (Daten + Indizes) in MB |
+| `Unused_MB` | Reservierter, aber noch nicht genutzter Speicher (freie Seiten) in MB |
+| `Total_MB` | Gesamter für die Tabelle reservierter Speicher (`Used_MB + Unused_MB`) |
+
+> **Hinweis:** `RowCounts` stammt aus den Partitionsstatistiken und kann bei veralteten Statistiken leicht abweichen. Für genaue Werte: `UPDATE STATISTICS BATCHHISTORY` vor der Abfrage ausführen.
+
+### Fachliche Interpretation
+
+- Wie viel Speicher belegt die `BATCHHISTORY`-Tabelle insgesamt auf der Datenbank?
+- Wie groß ist der Overhead durch Indizes im Vergleich zu den reinen Datenseiten?
+- Wie viel ungenutzter Speicher ist reserviert — d.h. nach einer Bereinigung sofort rückgewinnbar?
+
+---
+
+## Abfrage 4: Top 10 Batch-Jobs nach Historienvolumen
+
+### SQL-Abfrage
+
+```{sql connection=cnn}
+SELECT TOP 10
+    bh.BATCHJOBID,
+    bh.CAPTION,
+    COUNT(*)                    AS ct,
+    MAX(bh.CREATEDDATETIME)     AS lst
+FROM [dbo].[batchhistory] bh
+GROUP BY
+    bh.BATCHJOBID,
+    bh.CAPTION
+ORDER BY ct DESC;
+```
+
+### Beschreibung
+
+Diese Abfrage identifiziert die **10 Batch-Jobs, die die meisten Einträge in der Historie erzeugt haben**. Jeder Batch-Job wird durch `BATCHJOBID` eindeutig identifiziert; `CAPTION` enthält den lesbaren Anzeigenamen.
+
+### Kennzahlen
+
+| Kennzahl | Beschreibung |
+|----------|-------------|
+| `BATCHJOBID` | Technische ID des Batch-Jobs in D365 |
+| `CAPTION` | Anzeigename des Batch-Jobs (aus der D365-Konfiguration) |
+| `ct` | Anzahl der Historieneinträge dieses Jobs (= wie oft er ausgeführt wurde und Spuren hinterlassen hat) |
+| `lst` | Zeitpunkt der letzten Ausführung (`CREATEDDATETIME` MAX) |
+
+### Fachliche Interpretation
+
+- Welche Batch-Jobs erzeugen das größte Historienvolumen?
+- Gibt es Jobs, die unverhältnismäßig oft ausgeführt werden (z.B. stündlich oder minütlich)?
+- Welche Jobs sind primäre Kandidaten für eine **Historienbegrenzung oder verkürzte Aufbewahrungsfrist**?
+- Wann wurde ein Job zuletzt ausgeführt — ist er noch aktiv oder kann er deaktiviert werden?
+
+### Typisches Ergebnismuster
+
+Jobs mit sehr hohem `ct` bei gleichzeitig kurzem Intervall (z.B. alle 5 Minuten) sind die Hauptverursacher des Tabellenwachstums. Für diese Jobs empfiehlt sich:
+
+1. Historienlimit in D365 setzen: `Systemverwaltung > Batch-Jobs > [Job auswählen] > Aufgabenhistorie`
+2. Ausführungsintervall prüfen und ggf. verlängern
+
+---
+
+## Ergänzungsabfrage: Prozentuale Altersverteilung
+
+```{sql connection=cnn}
+SELECT
+    CASE
+        WHEN CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())
+            THEN 'Last 2 Months'
+        ELSE 'Older than 2 Months'
+    END AS DateGroup,
+    COUNT(*) AS RecordCount,
+    CAST(
+        COUNT(*) * 100.0 / SUM(COUNT(*)) OVER()
+        AS DECIMAL(5,2)
+    ) AS PercentOfTotal
+FROM BATCHHISTORY
+GROUP BY
+    CASE
+        WHEN CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())
+            THEN 'Last 2 Months'
+        ELSE 'Older than 2 Months'
+    END;
+```
+
+Diese Abfrage zeigt die prozentuale Verteilung der Datensätze auf die beiden Altersgruppen — unabhängig vom Status. Sie eignet sich als KPI-Tile im Power-BI-Bericht.
+
+---
+
+## Empfehlungen für den Power-BI-Bericht
+
+### Visualisierungen
+
+| Visual | Datenquelle | Zweck |
+|--------|-------------|-------|
+| Balkendiagramm (RecordCount je Status) | Abfrage 1 | Volumen je Statusgruppe |
+| Kreisdiagramm (SizeMB je Status) | Abfrage 1 | Speicheranteil je Status |
+| Gestapeltes Balkendiagramm (Status × Altersgruppe) | Abfrage 2 | Altersverteilung je Status |
+| KPI-Kacheln (Used_MB, Total_MB) | Abfrage 3 | Realer Tabellenspeicher auf einen Blick |
+| Balkendiagramm (Top 10 Jobs nach ct) | Abfrage 4 | Hauptverursacher Historienvolumen |
+| KPI-Kachel (% Older than 2 Months) | Ergänzungsabfrage | Handlungsbedarf auf einen Blick |
+
+### Fragestellungen für Stakeholder
+
+- Welche Batch-Status erzeugen die meisten Historieneinträge?
+- Welche Status verursachen den größten Speicherbedarf?
+- Wie verteilt sich die Historie auf aktuelle und ältere Datensätze?
+- Wie groß ist das Speicherpotenzial für mögliche Cleanup-Maßnahmen?
+- Welche Statusgruppen sollten bei einer Bereinigung priorisiert werden?
+
+### Handlungsempfehlung
+
+Der Bericht unterstützt Entscheidungen zur **Datenaufbewahrung, Archivierung und Speicheroptimierung** im D365-System. Auf Basis der Ergebnisse kann eine Bereinigungsregel definiert werden, z.B.:
+
+> *Datensätze mit Status "Ended" oder "Cancelled", die älter als 6 Monate sind, werden archiviert oder gelöscht.*
+
+Diese Regel ist in D365 über `Systemverwaltung > Periodische Aufgaben > Batch-Aufgabenhistorie bereinigen` konfigurierbar.
+
+---
+
+*Erstellt: 2026-09-02 | D365 Systemadministration*
