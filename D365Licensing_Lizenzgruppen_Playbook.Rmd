@@ -116,15 +116,15 @@ Der Export erzeugt zehn CSV-Dateien, die gemeinsam das technische Datenmodell vo
 
 ### 3.1 `Tables.csv`
 
-- **Zweck:** Kopfdaten aller Tabellen (Name, Label, Tabellengruppe, Konfigurationsschlüssel).
-- **Wichtige Spalten:** `TableName`, `Label`, `TableGroup`, `ConfigurationKey`, `SaveDataPerCompany`, `FieldCount`, `IndexCount`, `RelationCount`.
+- **Zweck:** Kopfdaten aller Tabellen (Name, Label, Tabellengruppe, Modul- und Formularzuordnung, Konfigurationsschlüssel).
+- **Wichtige Spalten:** `TableName`, `Label`, `TableGroup`, `Modules`, `FormRef`, `DataSharingType`, `ReplacementKey`, `ConfigurationKey`, `FieldCount`, `IndexCount`, `RelationCount`.
 - **Nutzen:** Ausgangspunkt jeder Analyse — Einstiegspunkt für Migrations-Scoping, Impact-Analyse und Data-Catalog-Einträge auf Tabellenebene.
 
 ### 3.2 `Fields.csv`
 
-- **Zweck:** Alle Felder je Tabelle inkl. Datentyp und Pflichtstatus.
-- **Wichtige Spalten:** `TableName`, `FieldName`, `FieldType`, `ExtendedDataType`, `EnumType`, `Mandatory`, `ArrayLength`.
-- **Nutzen:** Grundlage für Mapping-Tabellen in der Datenmigration und für die Spaltendokumentation in BI-Modellen.
+- **Zweck:** Alle Felder je Tabelle inkl. Datentyp, Pflichtstatus und Datenklassifizierung.
+- **Wichtige Spalten:** `TableName`, `FieldName`, `FieldType`, `ExtendedDataType`, `EnumType`, `Mandatory`, `ArrayLength`, `AssetClassification`.
+- **Nutzen:** Grundlage für Mapping-Tabellen in der Datenmigration und für die Spaltendokumentation in BI-Modellen; `AssetClassification` unterstützt zusätzlich Data-Catalog-/Compliance-Auswertungen.
 
 ### 3.3 `EDTs.csv`
 
@@ -146,15 +146,15 @@ Der Export erzeugt zehn CSV-Dateien, die gemeinsam das technische Datenmodell vo
 
 ### 3.6 `Views.csv`
 
-- **Zweck:** Alle Views inkl. zugrunde liegender Haupttabelle.
-- **Wichtige Spalten:** `ViewName`, `Label`, `PrimaryTable`, `DataSourceCount`, `FieldCount`.
+- **Zweck:** Alle Views inkl. zugrunde liegender Haupttabelle und Anzahl gejointer Datenquellen.
+- **Wichtige Spalten:** `ViewName`, `Label`, `TitleField1`, `TitleField2`, `PrimaryTable`, `DataSourceCount`, `FieldCount`.
 - **Nutzen:** Identifikation vorgefertigter, bereits aggregierter/gejointer Datenquellen für Reporting.
 
 ### 3.7 `DataEntities.csv`
 
-- **Zweck:** Alle Data Entities (OData/Data-Management-fähige Views) inkl. Public-Name und Primärschlüssel.
-- **Wichtige Spalten:** `EntityName`, `PublicEntityName`, `PublicCollectionName`, `EntityCategory`, `PrimaryKeyFields`, `DataManagementEnabled`.
-- **Nutzen:** Zentrale Referenz für Integrationen (OData, Data Management Framework) und Migrationsprojekte.
+- **Zweck:** Alle Data Entities (OData/Data-Management-fähige Views) inkl. Public-Name, Modul- und Menüpunkt-Zuordnung sowie aufgelöstem Primärschlüssel.
+- **Wichtige Spalten:** `EntityName`, `Modules`, `FormRef`, `PublicEntityName`, `PublicCollectionName`, `PrimaryTable`, `PrimaryKeyFields`, `DataManagementEnabled`.
+- **Nutzen:** Zentrale Referenz für Integrationen (OData, Data Management Framework) und Migrationsprojekte; `Modules`/`FormRef` ermöglichen zusätzlich die Zuordnung zu Fachbereich und D365-Deeplink (analog `Entity_Comparison_Export.R`).
 
 ### 3.8 `Indexes.csv`
 
@@ -305,8 +305,11 @@ dir_create(cfg$output_dir)
 #' @param aot_root Wurzelverzeichnis (PackagesLocalDirectory)
 #' @param element_folder AOT-Unterordnername, z.B. "AxTable", "AxEnum", "AxEdt"
 #' @param models Optionaler Vektor mit Modellnamen zur Filterung (NULL = alle)
+#' @param exact Wenn `FALSE`, wird `element_folder` als Praefix behandelt (z.B.
+#'   matcht "AxDataEntity" dann sowohl den Ordner "AxDataEntity" als auch
+#'   "AxDataEntityView"). Siehe Praxishinweis in 6.7 zu diesem konkreten Fall.
 #' @return Character-Vektor mit vollstaendigen Dateipfaden
-list_aot_files <- function(aot_root, element_folder, models = NULL) {
+list_aot_files <- function(aot_root, element_folder, models = NULL, exact = TRUE) {
   all_xml <- list.files(
     aot_root,
     pattern    = "\\.xml$",
@@ -316,7 +319,11 @@ list_aot_files <- function(aot_root, element_folder, models = NULL) {
   )
 
   # Pfad-Filter: findet ".../AxTable/..." unabhaengig vom Trennzeichen (/ oder \)
-  folder_pattern <- sprintf("[/\\\\]%s[/\\\\]", element_folder)
+  folder_pattern <- if (exact) {
+    sprintf("[/\\\\]%s[/\\\\]", element_folder)
+  } else {
+    sprintf("[/\\\\]%s[^/\\\\]*[/\\\\]", element_folder)
+  }
   element_files  <- all_xml[grepl(folder_pattern, all_xml, ignore.case = TRUE)]
 
   if (!is.null(models)) {
@@ -380,17 +387,30 @@ write_metadata_csv <- function(df, file_name, cfg) {
 
 **Fachliche Beschreibung:** Jede Tabelle wird als eigenständige XML-Datei unterhalb von `AxTable` abgelegt. Der Wurzelknoten `<AxTable>` enthält sowohl Kopfeigenschaften (Name, Label, Tabellengruppe) als auch die verschachtelten Strukturen für Felder, Field Groups, Indizes, Relations und Delete Actions (siehe 6.2–6.10).
 
-**Verwendete XML-Struktur (Auszug):**
+Eine reale Beispieldatei (`AssetActivityCode.xml`) aus der Zielumgebung korrigiert und ergänzt die zuvor angenommene Struktur:
+
+- Es gibt **kein** Element `<SaveDataPerCompany>`. Cross-Company-Verhalten wird stattdessen über **`<DataSharingType>`** abgebildet (beobachteter Wert: `Duplicate`). Dieses Dokument liest daher `DataSharingType` statt des zuvor angenommenen `SaveDataPerCompany`.
+- Wie bereits bei Data Entities (6.7) festgestellt, tragen auch Tabellen ein **`<Modules>`**-Element (Plural) zur fachlichen Modulzuordnung.
+- Tabellen tragen zusätzlich ein **`<FormRef>`** (Referenz auf das primäre Anzeigeformular — nützlich für Deeplinks, analog zu Data Entities).
+- `<TitleField1>` / `<TitleField2>` benennen die Felder, die als Datensatztitel in Formularen angezeigt werden.
+- `<ReplacementKey>` verweist per Name auf einen Eintrag in `Indexes` (siehe 6.8) — der dort hinterlegte Index dient als bevorzugter Anzeige-/Sortierschlüssel.
+
+**Verwendete XML-Struktur (Auszug, gekürzt aus `AssetActivityCode.xml`):**
 
 ```xml
 <AxTable xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
-  <Name>CustTable</Name>
-  <Label>@SYS83891</Label>
+  <Name>AssetActivityCode</Name>
+  <ConfigurationKey>Asset</ConfigurationKey>
+  <DeveloperDocumentation>@SYS329889</DeveloperDocumentation>
+  <FormRef>AssetActivityCode</FormRef>
+  <Label>@FixedAssets:FA_TableTitle_AssetActivityCode</Label>
   <TableGroup>Group</TableGroup>
-  <ConfigurationKey>LedgerBasic</ConfigurationKey>
-  <SaveDataPerCompany>Yes</SaveDataPerCompany>
-  <CacheLookup>Found</CacheLookup>
-  <DeveloperDocumentation>Kundenstammtabelle</DeveloperDocumentation>
+  <TitleField1>AssetActivityCode</TitleField1>
+  <TitleField2>Description</TitleField2>
+  <CacheLookup>EntireTable</CacheLookup>
+  <DataSharingType>Duplicate</DataSharingType>
+  <Modules>FixedAssets</Modules>
+  <ReplacementKey>ActivityCodeIdx</ReplacementKey>
   <Fields> ... </Fields>
   <FieldGroups> ... </FieldGroups>
   <Indexes> ... </Indexes>
@@ -409,12 +429,17 @@ extract_table_header <- function(root) {
     Label                  = xml_text_safe(root, "Label"),
     TableGroup             = xml_text_safe(root, "TableGroup"),
     ConfigurationKey       = xml_text_safe(root, "ConfigurationKey"),
-    SaveDataPerCompany     = xml_text_safe(root, "SaveDataPerCompany", "No"),
-    CacheLookup            = xml_text_safe(root, "CacheLookup"),
-    DeveloperDocumentation = xml_text_safe(root, "DeveloperDocumentation"),
-    FieldCount             = length(xml_find_all(root, "Fields/AxTableField")),
-    IndexCount             = length(xml_find_all(root, "Indexes/AxTableIndex")),
-    RelationCount          = length(xml_find_all(root, "Relations/AxTableRelation"))
+    Modules                = xml_text_safe(root, "Modules"),
+    FormRef                = xml_text_safe(root, "FormRef"),
+    DataSharingType         = xml_text_safe(root, "DataSharingType"),
+    TitleField1             = xml_text_safe(root, "TitleField1"),
+    TitleField2             = xml_text_safe(root, "TitleField2"),
+    ReplacementKey           = xml_text_safe(root, "ReplacementKey"),
+    CacheLookup             = xml_text_safe(root, "CacheLookup"),
+    DeveloperDocumentation  = xml_text_safe(root, "DeveloperDocumentation"),
+    FieldCount              = length(xml_find_all(root, "Fields/AxTableField")),
+    IndexCount              = length(xml_find_all(root, "Indexes/AxTableIndex")),
+    RelationCount           = length(xml_find_all(root, "Relations/AxTableRelation"))
   )
 }
 
@@ -436,25 +461,25 @@ tables_export <- export_tables(cfg)
 
 **Beispiel der erzeugten CSV-Struktur:**
 
-| TableName | Label | TableGroup | ConfigurationKey | SaveDataPerCompany | FieldCount | IndexCount | RelationCount |
-|-----------|-------|------------|-------------------|----------------------|------------|------------|---------------|
-| CustTable | @SYS83891 | Group | LedgerBasic | Yes | 187 | 14 | 22 |
-| VendTable | @SYS83892 | Group | LedgerBasic | Yes | 176 | 12 | 19 |
+| TableName | Label | TableGroup | Modules | FormRef | DataSharingType | ReplacementKey | FieldCount | IndexCount |
+|-----------|-------|------------|---------|---------|--------------------|-------------------|------------|------------|
+| AssetActivityCode | @FixedAssets:FA_TableTitle_AssetActivityCode | Group | FixedAssets | AssetActivityCode | Duplicate | ActivityCodeIdx | 2 | 1 |
 
 ### 6.2 Felder (`Fields.csv`)
 
-**Fachliche Beschreibung:** Felder sind unter `Fields/AxTableField` innerhalb der jeweiligen `AxTable`-Datei verschachtelt. Der konkrete Feldtyp (String, Int, Enum, Real, Date, UtcDateTime, Container, Guid, …) steht nicht als eigenes Element, sondern als polymorphes `i:type`-Attribut am `AxTableField`-Knoten (z. B. `i:type="AxTableFieldString"`).
+**Fachliche Beschreibung:** Felder sind unter `Fields/AxTableField` innerhalb der jeweiligen `AxTable`-Datei verschachtelt. Der konkrete Feldtyp (String, Int, Enum, Real, Date, UtcDateTime, Container, Guid, …) steht nicht als eigenes Element, sondern als polymorphes `i:type`-Attribut am `AxTableField`-Knoten (z. B. `i:type="AxTableFieldString"`) — bestätigt durch eine reale Beispieldatei (`AssetActivityCode.xml`).
 
-**Verwendete XML-Struktur (Auszug):**
+Dieselbe Datei zeigt zusätzlich ein bisher nicht dokumentiertes Element **`<AssetClassification>`** (beobachteter Wert: `Customer Content`) — eine Datenklassifizierung, die direkt für die Zielgruppe „Data Catalog" (Kap. 1.3) relevant ist und daher ergänzt wird.
+
+**Verwendete XML-Struktur (Auszug, ergänzt um `AssetClassification`):**
 
 ```xml
 <Fields>
-  <AxTableField i:type="AxTableFieldString">
-    <Name>AccountNum</Name>
-    <ExtendedDataType>CustAccount</ExtendedDataType>
-    <Label>@SYS4471</Label>
+  <AxTableField xmlns="" i:type="AxTableFieldString">
+    <Name>AssetActivityCode</Name>
+    <AssetClassification>Customer Content</AssetClassification>
+    <ExtendedDataType>AssetActivityCodeId</ExtendedDataType>
     <Mandatory>Yes</Mandatory>
-    <ArrayLength>0</ArrayLength>
   </AxTableField>
   <AxTableField i:type="AxTableFieldEnum">
     <Name>Blocked</Name>
@@ -475,16 +500,17 @@ extract_fields <- function(root, table_nm) {
     raw_type <- xml_attr_safe(fn, "type", "AxTableFieldUnknown")
 
     tibble(
-      TableName         = table_nm,
-      FieldName         = xml_text_safe(fn, "Name"),
-      FieldType         = str_remove(raw_type, "^AxTableField"),
-      ExtendedDataType  = xml_text_safe(fn, "ExtendedDataType"),
-      EnumType          = xml_text_safe(fn, "EnumType"),
-      Label             = xml_text_safe(fn, "Label"),
-      Mandatory         = xml_text_safe(fn, "Mandatory", "No"),
-      AllowEdit         = xml_text_safe(fn, "AllowEdit", "Yes"),
-      Visible           = xml_text_safe(fn, "Visible", "Yes"),
-      ArrayLength       = xml_text_safe(fn, "ArrayLength", "0")
+      TableName          = table_nm,
+      FieldName          = xml_text_safe(fn, "Name"),
+      FieldType          = str_remove(raw_type, "^AxTableField"),
+      ExtendedDataType   = xml_text_safe(fn, "ExtendedDataType"),
+      EnumType           = xml_text_safe(fn, "EnumType"),
+      Label              = xml_text_safe(fn, "Label"),
+      Mandatory          = xml_text_safe(fn, "Mandatory", "No"),
+      AllowEdit          = xml_text_safe(fn, "AllowEdit", "Yes"),
+      Visible            = xml_text_safe(fn, "Visible", "Yes"),
+      ArrayLength        = xml_text_safe(fn, "ArrayLength", "0"),
+      AssetClassification = xml_text_safe(fn, "AssetClassification")
     )
   })
 }
@@ -508,25 +534,35 @@ fields_export <- export_fields(cfg)
 
 **Beispiel der erzeugten CSV-Struktur:**
 
-| TableName | FieldName | FieldType | ExtendedDataType | EnumType | Mandatory | ArrayLength |
-|-----------|-----------|-----------|-------------------|----------|-----------|-------------|
-| CustTable | AccountNum | String | CustAccount | | Yes | 0 |
-| CustTable | Blocked | Enum | | CustVendorBlocked | No | 0 |
+| TableName | FieldName | FieldType | ExtendedDataType | Mandatory | AssetClassification |
+|-----------|-----------|-----------|-------------------|-----------|------------------------|
+| AssetActivityCode | AssetActivityCode | String | AssetActivityCodeId | Yes | Customer Content |
+| AssetActivityCode | Description | String | Description | Yes | Customer Content |
 
 ### 6.3 Extended Data Types (`EDTs.csv`)
 
-**Fachliche Beschreibung:** EDTs werden unterhalb von `AxEdt` als eigenständige XML-Dateien abgelegt. Im Gegensatz zu Feldern trägt hier nicht ein Attribut, sondern der **Name des Wurzelelements selbst** den konkreten Basistyp (`AxEdtString`, `AxEdtInt`, `AxEdtReal`, `AxEdtEnum`, `AxEdtDate`, `AxEdtContainer`, `AxEdtGuid`, …).
+**Fachliche Beschreibung:** EDTs werden unterhalb von `AxEdt` als eigenständige XML-Dateien abgelegt.
 
-**Verwendete XML-Struktur (Auszug):**
+> **Korrektur anhand vier realer Beispieldateien** (`BlankItemId.xml`, `BudgetActualsBalancesBalanceType.xml`, `BudgetPlanName.xml`, `BOMCalcGroupName.xml`): Das Wurzelelement heißt in **allen** Fällen unverändert **`<AxEdt>`** — nicht `<AxEdtString>`/`<AxEdtEnum>`/etc., wie eine frühere Fassung dieses Dokuments annahm. Der konkrete Basistyp steht stattdessen exakt wie bei Feldern (6.2) als **polymorphes `i:type`-Attribut** auf dem Wurzelknoten (`i:type="AxEdtString"`, `i:type="AxEdtEnum"`, …). `xml_name(root)` hätte in der vorherigen Fassung in jedem Fall lediglich `"AxEdt"` geliefert und die Spalte `BaseType` wäre für jede Datei leer gewesen — dieser Fehler wird korrigiert, indem dieselbe `xml_attr_safe()`-Technik wie bei `extract_fields()` verwendet wird.
+>
+> Zusätzlich zeigen die Beispiele: `<StringSize>` fehlt in allen drei String-EDTs — plausibel, da alle drei ein `<Extends>` besitzen und die Größe damit vom Basis-EDT geerbt wird, statt sie erneut zu deklarieren (eine vollständige Auflösung würde der `Extends`-Kette folgen, was hier bewusst nicht implementiert wird). Neu und bisher nicht dokumentiert sind `<ArrayElements />`, `<Relations />` und `<TableReferences />` als leere Sammel-Elemente auf EDT-Ebene sowie `<Style>` (UI-Darstellungshinweis, z. B. `Radiobutton` bei enum-basierten EDTs) — beide werden hier nicht extrahiert, da für ein technisches Dictionary ohne Mehrwert.
+
+**Verwendete XML-Struktur (Auszug aus `BudgetActualsBalancesBalanceType.xml` und `BudgetPlanName.xml`):**
 
 ```xml
-<AxEdtString xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
-  <Name>CustAccount</Name>
-  <Label>@SYS4471</Label>
-  <Extends>AccountNum</Extends>
-  <StringSize>20</StringSize>
-  <ConfigurationKey>LedgerBasic</ConfigurationKey>
-</AxEdtString>
+<AxEdt xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns="" i:type="AxEdtEnum">
+  <Name>BudgetActualsBalancesBalanceType</Name>
+  <ConfigurationKey>LedgerBasicBudget</ConfigurationKey>
+  <EnumType>BudgetBalanceType</EnumType>
+  <Style>Radiobutton</Style>
+</AxEdt>
+
+<AxEdt xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns="" i:type="AxEdtString">
+  <Name>BudgetPlanName</Name>
+  <ConfigurationKey>LedgerAdv2BudgetPlanning</ConfigurationKey>
+  <Extends>BudgetPlanningName</Extends>
+  <Label>@Budget:BudgetPlanning_BudgetPlanName</Label>
+</AxEdt>
 ```
 
 **Vollständiger R-Code:**
@@ -539,9 +575,11 @@ export_edts <- function(cfg) {
     root <- safe_read_xml(f)
     if (is.null(root)) return(tibble())
 
+    raw_type <- xml_attr_safe(root, "type", "AxEdtUnknown")
+
     tibble(
       EdtName                = xml_text_safe(root, "Name"),
-      BaseType               = str_remove(xml_name(root), "^AxEdt"),
+      BaseType               = str_remove(raw_type, "^AxEdt"),
       Label                  = xml_text_safe(root, "Label"),
       Extends                = xml_text_safe(root, "Extends"),
       ConfigurationKey       = xml_text_safe(root, "ConfigurationKey"),
@@ -560,14 +598,16 @@ edts_export <- export_edts(cfg)
 
 **Beispiel der erzeugten CSV-Struktur:**
 
-| EdtName | BaseType | Extends | StringSize | EnumType |
-|---------|----------|---------|------------|----------|
-| CustAccount | String | AccountNum | 20 | |
-| CustVendorBlocked | Enum | | | CustVendorBlocked |
+| EdtName | BaseType | Extends | ConfigurationKey | EnumType |
+|---------|----------|---------|----------------------|----------|
+| BudgetPlanName | String | BudgetPlanningName | LedgerAdv2BudgetPlanning | |
+| BudgetActualsBalancesBalanceType | Enum | | LedgerBasicBudget | BudgetBalanceType |
 
 ### 6.4 Enums (`Enums.csv`)
 
 **Fachliche Beschreibung:** Enums liegen unter `AxEnum`. Der Wurzelknoten enthält Name und Label des Enums sowie eine Liste `EnumValues/AxEnumValue` mit den einzelnen Werten. Für die Auflösung numerischer Werte in SQL/BI-Auswertungen wird je Enum-Wert eine eigene Zeile erzeugt.
+
+> **Validiert anhand einer realen Beispieldatei (`EventLevel.xml`):** Struktur und Elementnamen (`AxEnum`, `EnumValues/AxEnumValue`, `Name`, `Label`, `Value`) sind unverändert korrekt — als einziger Abschnitt dieses Dokuments ohne Korrekturbedarf. Die Beispieldatei zeigt zudem zwei Randfälle, die der Code bereits robust behandelt: Der erste Wert (`Unknown`) besitzt **kein** `<Value>`-Element (impliziter Standardwert, i. d. R. `0`) — `xml_text_safe()` liefert dafür `NA` statt eines Fehlers. Ebenso besitzt der `AxEnum`-Wurzelknoten selbst **kein** eigenes `<Label>` — auch das wird über den `default`-Parameter von `xml_text_safe()` abgefangen.
 
 **Verwendete XML-Struktur (Auszug):**
 
@@ -712,27 +752,52 @@ relations_export <- export_relations(cfg)
 
 ### 6.6 Views (`Views.csv`)
 
-**Fachliche Beschreibung:** Views liegen unter `AxView`. Sie definieren eine oder mehrere Datenquellen (`DataSources/AxViewDataSource`) sowie eine Liste angezeigter Felder (`Fields/AxViewField`). Als primäre Tabelle wird die erste deklarierte Datenquelle herangezogen.
+**Fachliche Beschreibung:** Views liegen unter `AxView`. Sie definieren eine Liste angezeigter Felder (`Fields/AxViewField`, direkter Kindknoten der Wurzel) sowie eine zugrunde liegende Query.
 
-**Verwendete XML-Struktur (Auszug):**
+> **Korrektur anhand zweier realer Beispieldateien** (`AssetBalances.xml`, `CatProductFilter.xml`): Es existiert **kein** Wurzel-`<DataSources>` mit `<AxViewDataSource>`-Kindern, wie eine frühere Fassung dieses Dokuments annahm — dieselbe Struktur, die sich bereits bei Data Entities (6.7) als falsch erwiesen hat. Stattdessen liegt die Query — wie bei Data Entities — eingebettet unter **`<ViewMetadata>/<DataSources>/<AxQuerySimpleRootDataSource>`**, mit `<Table>` als primärer Tabelle. Zusätzliche gejointe Tabellen folgen als verschachtelte `<AxQuerySimpleEmbeddedDataSource>`-Knoten innerhalb der `<DataSources>` des jeweils übergeordneten Datenquellenknotens (beliebig tief, je nach Anzahl Joins). Die vorherige XPath-Abfrage `DataSources/AxViewDataSource` hätte bei jeder realen Datei `PrimaryTable = NA` und `DataSourceCount = 0` geliefert.
+>
+> Zusätzlich zeigen die Beispiele `<DeveloperDocumentation>` sowie `<TitleField1>`/`<TitleField2>` — dieselben Elemente, die bereits bei Tabellen (6.1) bestätigt wurden — auch auf View-Ebene; beide werden ergänzt.
+
+**Verwendete XML-Struktur (Auszug aus `AssetBalances.xml`, gekürzt):**
 
 ```xml
 <AxView xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
-  <Name>CustTableListPageView</Name>
-  <Label>@SYS12345</Label>
+  <Name>AssetBalances</Name>
+  <ConfigurationKey>Asset</ConfigurationKey>
+  <DeveloperDocumentation>@SYS323981</DeveloperDocumentation>
+  <Label>@SYS67623</Label>
+  <TitleField1>AssetGroup</TitleField1>
+  <TitleField2>AssetId</TitleField2>
   <Fields>
-    <AxViewField>
-      <Name>AccountNum</Name>
-      <DataSource>CustTable</DataSource>
-      <DataField>AccountNum</DataField>
+    <AxViewField xmlns="" i:type="AxViewFieldBound">
+      <Name>AssetGroup</Name>
+      <DataField>AssetGroup</DataField>
+      <DataSource>AssetBook</DataSource>
     </AxViewField>
+    <!-- weitere AxViewField-Eintraege -->
   </Fields>
-  <DataSources>
-    <AxViewDataSource>
-      <Name>CustTable</Name>
-      <Table>CustTable</Table>
-    </AxViewDataSource>
-  </DataSources>
+  <ViewMetadata>
+    <Name>Metadata</Name>
+    <DataSources>
+      <AxQuerySimpleRootDataSource>
+        <Name>AssetTable</Name>
+        <Table>AssetTable</Table>
+        <DataSources>
+          <AxQuerySimpleEmbeddedDataSource>
+            <Name>AssetBook</Name>
+            <Table>AssetBook</Table>
+            <DataSources>
+              <AxQuerySimpleEmbeddedDataSource>
+                <Name>AssetBookTable</Name>
+                <Table>AssetBookTable</Table>
+                <DataSources />
+              </AxQuerySimpleEmbeddedDataSource>
+            </DataSources>
+          </AxQuerySimpleEmbeddedDataSource>
+        </DataSources>
+      </AxQuerySimpleRootDataSource>
+    </DataSources>
+  </ViewMetadata>
 </AxView>
 ```
 
@@ -746,16 +811,28 @@ export_views <- function(cfg) {
     root <- safe_read_xml(f)
     if (is.null(root)) return(tibble())
 
-    ds_nodes    <- xml_find_all(root, "DataSources/AxViewDataSource")
+    # Primaertabelle: liegt unterhalb ViewMetadata/DataSources, nicht an der Wurzel (siehe Praxishinweis oben)
+    primary_table <- xml_text_safe(
+      root, "ViewMetadata/DataSources/AxQuerySimpleRootDataSource/Table"
+    )
+
+    # Gesamtzahl Datenquellen = Root-Datenquelle + alle verschachtelten Joins,
+    # unabhaengig von deren Verschachtelungstiefe
+    embedded_count    <- length(xml_find_all(root, ".//AxQuerySimpleEmbeddedDataSource"))
+    data_source_count <- embedded_count + as.integer(!is.na(primary_table))
+
     field_nodes <- xml_find_all(root, "Fields/AxViewField")
 
     tibble(
-      ViewName         = xml_text_safe(root, "Name"),
-      Label            = xml_text_safe(root, "Label"),
-      PrimaryTable     = if (length(ds_nodes) > 0) xml_text_safe(ds_nodes[[1]], "Table") else NA_character_,
-      DataSourceCount  = length(ds_nodes),
-      FieldCount       = length(field_nodes),
-      ConfigurationKey = xml_text_safe(root, "ConfigurationKey")
+      ViewName               = xml_text_safe(root, "Name"),
+      Label                  = xml_text_safe(root, "Label"),
+      TitleField1             = xml_text_safe(root, "TitleField1"),
+      TitleField2             = xml_text_safe(root, "TitleField2"),
+      PrimaryTable            = primary_table,
+      DataSourceCount         = data_source_count,
+      FieldCount              = length(field_nodes),
+      ConfigurationKey        = xml_text_safe(root, "ConfigurationKey"),
+      DeveloperDocumentation  = xml_text_safe(root, "DeveloperDocumentation")
     )
   })
 
@@ -768,31 +845,66 @@ views_export <- export_views(cfg)
 
 **Beispiel der erzeugten CSV-Struktur:**
 
-| ViewName | PrimaryTable | DataSourceCount | FieldCount |
-|----------|--------------|------------------|------------|
-| CustTableListPageView | CustTable | 1 | 24 |
+| ViewName | Label | TitleField1 | TitleField2 | PrimaryTable | DataSourceCount | FieldCount |
+|----------|-------|--------------|--------------|--------------|-------------------|------------|
+| AssetBalances | @SYS67623 | AssetGroup | AssetId | AssetTable | 3 | 7 |
 
 ### 6.7 Data Entities (`DataEntities.csv`)
 
-**Fachliche Beschreibung:** Data Entities sind technisch eine spezialisierte Form von Views und werden unter `AxDataEntityView` abgelegt. Zusätzlich zu den View-typischen Elementen enthalten sie Integrationsmetadaten wie den öffentlichen OData-Namen (`PublicEntityName`/`PublicCollectionName`), die Entitätskategorie sowie die Primärschlüsselfelder.
+**Fachliche Beschreibung:** Data Entities sind technisch eine spezialisierte Form von Views, aufgebaut auf einer zugrunde liegenden AOT-Query. Anhand einer realen Beispieldatei (`DocuTypeEntity.xml`) aus der Zielumgebung wurde die Struktur in diesem Dokument mehrfach präzisiert:
 
-**Verwendete XML-Struktur (Auszug):**
+- Das **Wurzelelement** lautet tatsächlich `<AxDataEntityView>` — nicht `<AxDataEntity>`, wie in einer vorherigen Fassung dieses Dokuments unter Berufung auf `get_entity_aot_metadata()` (`DynaSec`-Package) angenommen. Da sich diese Funktion gezielt auf den Ordner `AxDataEntity` beschränkt (`fixed`-String-Suche `"/AxDataEntity/"`, die auf `"AxDataEntityView/"` **nicht** anschlägt, da dort kein Schrägstrich unmittelbar auf `AxDataEntity` folgt), ist unklar, ob in der Zielumgebung tatsächlich zwei getrennte Ordner existieren oder ob dieser Filter einen Teil der realen Data Entities systematisch **nicht** erfasst. Der Export in diesem Dokument löst das pragmatisch: `list_aot_files()` wird mit `exact = FALSE` aufgerufen und matcht damit jeden Ordner, der mit `AxDataEntity` beginnt (inkl. `AxDataEntityView`).
+- Das Feld heißt **`<Modules>`** (Plural) statt `<Module>` (Singular). Der Regex in `get_entity_aot_metadata()` (`(?<=<Module>)[^<]+`) verlangt exakt `<Module>` unmittelbar vor dem Inhalt — bei `<Modules>SystemAdministration</Modules>` folgt auf `<Module` jedoch `s>`, nicht `>`. Der Regex schlägt hier also fehl und liefert `NA`, obwohl der Wert vorhanden ist. Dieses Dokument liest daher `<Modules>` (Plural).
+- Boolesche Felder (`DataManagementEnabled`, `IsPublic`) verwenden — wie an anderer Stelle in diesem Dokument bereits durchgängig der Fall — `Yes`/`No`, nicht `true`/`false`.
+- Das Staging-Tabellenfeld heißt **`DataManagementStagingTable`**, nicht `StagingTableName`.
+- Der Primärschlüssel ist **kein** flacher Feld-Container. `<PrimaryKey>` enthält nur den *Namen* eines Eintrags in `<Keys>/<AxDataEntityViewKey>`; erst dessen `Fields/AxDataEntityViewKeyField/DataField`-Kindelemente liefern die tatsächlichen Feldnamen.
+- Die primäre Datenquelle steht **nicht** direkt unter einem Wurzel-`<DataSources>`, sondern unter `<ViewMetadata>/<DataSources>/<AxQuerySimpleRootDataSource>/<Table>` — die zugrunde liegende Query ist als separates eingebettetes Objekt (`ViewMetadata`) modelliert.
+- Zusätzlich vorhanden und bisher nicht dokumentiert: `<Tags>` (freie Schlagworte) und `<PrimaryCompanyContext>` (Feld, das die Gesellschaft/Company der Entity bestimmt).
+
+**Verwendete XML-Struktur (Auszug, gekürzt aus `DocuTypeEntity.xml`):**
 
 ```xml
 <AxDataEntityView xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
-  <Name>CustomersV3</Name>
-  <Label>@SYS12345</Label>
-  <EntityCategory>Master</EntityCategory>
-  <PublicEntityName>Customer</PublicEntityName>
-  <PublicCollectionName>Customers</PublicCollectionName>
-  <DataManagementEnabled>true</DataManagementEnabled>
-  <IsPublic>true</IsPublic>
-  <StagingTableName>CustomersV3Staging</StagingTableName>
-  <PrimaryKeyFields>
-    <AxDataEntityViewPrimaryKeyField>DataAreaId</AxDataEntityViewPrimaryKeyField>
-    <AxDataEntityViewPrimaryKeyField>CustomerAccount</AxDataEntityViewPrimaryKeyField>
-  </PrimaryKeyFields>
-  <DataSources> ... </DataSources>
+  <Name>DocuTypeEntity</Name>
+  <FormRef>DocuType</FormRef>
+  <Label>@SYS22579</Label>
+  <Tags>Documents</Tags>
+  <DataManagementEnabled>Yes</DataManagementEnabled>
+  <DataManagementStagingTable>DocuTypeStaging</DataManagementStagingTable>
+  <IsPublic>Yes</IsPublic>
+  <Modules>SystemAdministration</Modules>
+  <PrimaryCompanyContext>DataAreaId</PrimaryCompanyContext>
+  <PrimaryKey>EntityKey</PrimaryKey>
+  <PublicCollectionName>DocumentTypes</PublicCollectionName>
+  <PublicEntityName>DocumentType</PublicEntityName>
+  <Fields>
+    <AxDataEntityViewField xmlns="" i:type="AxDataEntityViewMappedField">
+      <Name>Name</Name>
+      <DataField>Name</DataField>
+      <DataSource>DocuType</DataSource>
+    </AxDataEntityViewField>
+    <!-- weitere Fields: gemappt (AxDataEntityViewMappedField, mit DataField/DataSource)
+         oder unberechnete/berechnete Zusatzfelder (AxDataEntityViewUnmappedFieldString, u.a.) -->
+  </Fields>
+  <Keys>
+    <AxDataEntityViewKey>
+      <Name>EntityKey</Name>
+      <Fields>
+        <AxDataEntityViewKeyField>
+          <DataField>ID</DataField>
+        </AxDataEntityViewKeyField>
+      </Fields>
+    </AxDataEntityViewKey>
+  </Keys>
+  <ViewMetadata>
+    <Name>Metadata</Name>
+    <DataSources>
+      <AxQuerySimpleRootDataSource>
+        <Name>DocuType</Name>
+        <Table>DocuType</Table>
+      </AxQuerySimpleRootDataSource>
+    </DataSources>
+  </ViewMetadata>
 </AxDataEntityView>
 ```
 
@@ -800,27 +912,46 @@ views_export <- export_views(cfg)
 
 ```r
 export_data_entities <- function(cfg) {
-  files <- list_aot_files(cfg$aot_root, "AxDataEntityView", cfg$models)
+  # exact = FALSE: erfasst sowohl "AxDataEntity" als auch "AxDataEntityView"
+  # als Ordnernamen (siehe Praxishinweis oben)
+  files <- list_aot_files(cfg$aot_root, "AxDataEntity", cfg$models, exact = FALSE)
 
   entities_df <- map_dfr(files, function(f) {
     root <- safe_read_xml(f)
     if (is.null(root)) return(tibble())
 
-    ds_nodes <- xml_find_all(root, "DataSources/AxViewDataSource")
-    pk_nodes <- xml_find_all(root, "PrimaryKeyFields/AxDataEntityViewPrimaryKeyField")
-    pk_flds  <- paste(map_chr(pk_nodes, xml_text, trim = TRUE), collapse = "; ")
+    # Primaertabelle: liegt bei Data Entities unterhalb von ViewMetadata/DataSources,
+    # nicht direkt unter einem Wurzel-DataSources wie bei einer regulaeren AxView (6.6)
+    primary_table <- xml_text_safe(
+      root, "ViewMetadata/DataSources/AxQuerySimpleRootDataSource/Table"
+    )
+
+    # Primaerschluessel: <PrimaryKey> verweist per Name auf einen Eintrag in <Keys>;
+    # die eigentlichen Feldnamen stehen dort unter Fields/AxDataEntityViewKeyField/DataField
+    primary_key_name <- xml_text_safe(root, "PrimaryKey")
+    key_node  <- xml_find_first(root, sprintf("Keys/AxDataEntityViewKey[Name='%s']", primary_key_name))
+    pk_fields <- if (!is.na(key_node)) {
+      key_field_nodes <- xml_find_all(key_node, "Fields/AxDataEntityViewKeyField")
+      paste(map_chr(key_field_nodes, function(kn) xml_text_safe(kn, "DataField")), collapse = "; ")
+    } else {
+      NA_character_
+    }
 
     tibble(
-      EntityName            = xml_text_safe(root, "Name"),
-      PublicEntityName      = xml_text_safe(root, "PublicEntityName"),
-      PublicCollectionName  = xml_text_safe(root, "PublicCollectionName"),
-      Label                 = xml_text_safe(root, "Label"),
-      EntityCategory        = xml_text_safe(root, "EntityCategory"),
-      PrimaryTable          = if (length(ds_nodes) > 0) xml_text_safe(ds_nodes[[1]], "Table") else NA_character_,
-      PrimaryKeyFields      = pk_flds,
-      DataManagementEnabled = xml_text_safe(root, "DataManagementEnabled", "false"),
-      IsPublic              = xml_text_safe(root, "IsPublic", "false"),
-      StagingTableName      = xml_text_safe(root, "StagingTableName")
+      EntityName                = xml_text_safe(root, "Name"),
+      Modules                   = xml_text_safe(root, "Modules"),
+      FormRef                   = xml_text_safe(root, "FormRef"),
+      Tags                      = xml_text_safe(root, "Tags"),
+      PublicEntityName          = xml_text_safe(root, "PublicEntityName"),
+      PublicCollectionName      = xml_text_safe(root, "PublicCollectionName"),
+      Label                     = xml_text_safe(root, "Label"),
+      PrimaryTable              = primary_table,
+      PrimaryKeyName            = primary_key_name,
+      PrimaryKeyFields          = pk_fields,
+      PrimaryCompanyContext     = xml_text_safe(root, "PrimaryCompanyContext"),
+      DataManagementEnabled     = xml_text_safe(root, "DataManagementEnabled", "No"),
+      IsPublic                  = xml_text_safe(root, "IsPublic", "No"),
+      DataManagementStagingTable = xml_text_safe(root, "DataManagementStagingTable")
     )
   })
 
@@ -831,11 +962,13 @@ export_data_entities <- function(cfg) {
 data_entities_export <- export_data_entities(cfg)
 ```
 
+> **Feldebene (optionale Erweiterung):** Jede Data Entity enthält zusätzlich eine vollständige `Fields`-Liste (`AxDataEntityViewField`, polymorph über `i:type`: gemappte Felder vom Typ `AxDataEntityViewMappedField` mit `DataField`/`DataSource`, sowie berechnete/unberechnete Zusatzfelder wie `AxDataEntityViewUnmappedFieldString` mit `ExtendedDataType`/`IsComputedField`). Diese Feldebene ist nicht Teil von `DataEntities.csv` (das bleibt bewusst auf Entity-Kopfebene), ließe sich aber nach demselben Muster wie `extract_fields()` (6.2) als eigener Export `DataEntityFields.csv` ergänzen — siehe Kap. 8 Weiterentwicklung.
+
 **Beispiel der erzeugten CSV-Struktur:**
 
-| EntityName | PublicEntityName | PublicCollectionName | EntityCategory | PrimaryKeyFields | DataManagementEnabled |
-|------------|-------------------|------------------------|------------------|---------------------|--------------------------|
-| CustomersV3 | Customer | Customers | Master | DataAreaId; CustomerAccount | true |
+| EntityName | Modules | FormRef | Tags | PublicEntityName | PublicCollectionName | PrimaryTable | PrimaryKeyFields | DataManagementEnabled |
+|------------|---------|---------|------|-------------------|------------------------|--------------|----------------------|--------------------------|
+| DocuTypeEntity | SystemAdministration | DocuType | Documents | DocumentType | DocumentTypes | DocuType | ID | Yes |
 
 ### 6.8 Indizes (`Indexes.csv`)
 
@@ -972,17 +1105,19 @@ field_groups_export <- export_field_groups(cfg)
 
 ### 6.10 Delete Actions (`DeleteActions.csv`)
 
-**Fachliche Beschreibung:** Delete Actions sind unter `DeleteActions/AxTableDeleteAction` innerhalb der `AxTable`-Datei verschachtelt und definieren, wie sich das Löschen eines Datensatzes auf verwandte Tabellen auswirkt (`Cascade`, `Restricted`, `CascadeIfEmpty`). Sie referenzieren die zugrunde liegende Relation über `DeleteActionRelation`.
+**Fachliche Beschreibung:** Delete Actions sind unter `DeleteActions/AxTableDeleteAction` innerhalb der `AxTable`-Datei verschachtelt und definieren, wie sich das Löschen eines Datensatzes auf verwandte Tabellen auswirkt (`Cascade`, `Restricted`, `CascadeIfEmpty`).
 
-**Verwendete XML-Struktur (Auszug):**
+> **Korrektur anhand einer realen Beispieldatei (`AssetActivityCode.xml`):** Die tatsächlichen Elementnamen sind **`<Table>`** (nicht `<RelatedTable>`, wie zuvor in diesem Dokument angenommen) und **`<Relation>`** (nicht `<DeleteActionRelation>`). Eine frühere Fassung dieses Codes hätte gegen echte Dateien durchgängig `NA` in beiden Spalten geliefert. Die CSV-Spaltennamen (`RelatedTable`, `DeleteActionRelation`) bleiben zur besseren Lesbarkeit erhalten — nur die zugrunde liegenden XPath-Ausdrücke werden korrigiert. Im Beispiel ist `<Relation>` leer, da die Delete Action hier die implizite/primäre Beziehung zur Tabelle nutzt statt einer benannten Relation.
+
+**Verwendete XML-Struktur (Auszug aus `AssetActivityCode.xml`):**
 
 ```xml
 <DeleteActions>
   <AxTableDeleteAction>
-    <Name>DelCustTrans</Name>
-    <RelatedTable>CustTrans</RelatedTable>
-    <DeleteActionRelation>CustTrans</DeleteActionRelation>
+    <Name>AssetTable</Name>
     <DeleteAction>Restricted</DeleteAction>
+    <Relation></Relation>
+    <Table>AssetTable</Table>
   </AxTableDeleteAction>
 </DeleteActions>
 ```
@@ -998,8 +1133,8 @@ extract_delete_actions <- function(root, table_nm) {
     tibble(
       TableName             = table_nm,
       DeleteActionName      = xml_text_safe(dan, "Name"),
-      RelatedTable          = xml_text_safe(dan, "RelatedTable"),
-      DeleteActionRelation  = xml_text_safe(dan, "DeleteActionRelation"),
+      RelatedTable          = xml_text_safe(dan, "Table"),
+      DeleteActionRelation  = xml_text_safe(dan, "Relation"),
       DeleteAction          = xml_text_safe(dan, "DeleteAction", "Restricted")
     )
   })
@@ -1024,9 +1159,9 @@ delete_actions_export <- export_delete_actions(cfg)
 
 **Beispiel der erzeugten CSV-Struktur:**
 
-| TableName | DeleteActionName | RelatedTable | DeleteAction |
-|-----------|--------------------|--------------|---------------|
-| CustTable | DelCustTrans | CustTrans | Restricted |
+| TableName | DeleteActionName | RelatedTable | DeleteActionRelation | DeleteAction |
+|-----------|--------------------|--------------|--------------------------|---------------|
+| AssetActivityCode | AssetTable | AssetTable | | Restricted |
 
 ### 6.11 Kombinierter Single-Pass-Export (Performance-Optimierung)
 
