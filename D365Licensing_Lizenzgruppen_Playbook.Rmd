@@ -3,370 +3,1154 @@ output:
   word_document: default
   html_document: default
 ---
-# Dokumentation: Batch-Historie-Auswertung (D365 Finance & Operations)
+# D365 Metadaten-Dictionary – Technischer Export aus PackagesLocalDirectory (D365FO 10.0.46 / PU70)
 
-**Autor:** Cedric Kameni  
-**Bereich:** D365 Systemadministration  
-**Zweck:** Grundlage für Power-BI-Bericht zur Speicher- und Statusauswertung der Batch-Historie
-
----
-
-## Ziel
-
-Die Batch-Historie (`BATCHHISTORY`) speichert alle vergangenen Batch-Jobausführungen im D365-System. Mit der Zeit wächst diese Tabelle erheblich und belegt signifikanten Datenbankspeicher.
-
-Die folgenden Abfragen dienen dazu:
-
-- einen Überblick über Anzahl und Speicherverbrauch nach Batch-Status zu gewinnen
-- den Anteil historischer vs. aktueller Datensätze sichtbar zu machen
-- die **10 Batch-Jobs mit dem höchsten Historienvolumen** zu identifizieren
-- die **tatsächliche Tabellengröße** auf Datenbankebene zu ermitteln
-- Entscheidungsgrundlagen für **Archivierung und Bereinigung** zu liefern
-
-Die Ergebnisse werden in einem **Power-BI-Bericht** visualisiert, der sowohl IT- als auch Fachentscheidungen unterstützt.
-
-### Umgebungshinweis
-
-Die SQL-Auswertungen sollen auf einer **PROD-nahen Datenbank** erfolgen, um realistische Ergebnisse zu erhalten. Hierfür wird zeitnah ein aktueller **PROD-Datenbankabzug auf TST** eingespielt.
-
+**Autor:** Cedric Kameni
+**Bereich:** D365 Systemadministration / Architektur / Data Engineering
+**Zweck:** Technisches Projektdokument zum XML-basierten Export der D365FO-Metadaten (Tabellen, Felder, EDTs, Enums, Relations, Views, Data Entities, Indizes, Field Groups, Delete Actions) mittels R — als Grundlage für Datenmigration, Architektur, BI, Data Catalog und Impact-Analyse
 
 ---
 
-## Hintergrundinformation: Status-Werte in BATCHHISTORY
+## 1. Einleitung
 
-Die Spalte `STATUS` ist eine numerische Kennzahl. Die folgende Tabelle zeigt die Bedeutung der Werte:
+### 1.1 Ziel des Projekts
 
-| Status | Bezeichnung | Bedeutung |
-|--------|-------------|-----------|
-| 0 | Withhold | Job zurückgehalten / pausiert |
-| 1 | Waiting | Wartet auf Ausführung |
-| 2 | Executing | Wird aktuell ausgeführt |
-| 3 | Error | Abgeschlossen mit Fehler |
-| 4 | Ended | Erfolgreich abgeschlossen |
-| 5 | Cancelled | Abgebrochen (durch Benutzer oder System) |
-| 7 | Ready | Bereit zur Ausführung |
-| 8 | Canceled | Storniert (alternative Schreibweise) |
+Dynamics 365 Finance & Operations verfügt über kein durchgängiges, frei zugängliches Werkzeug, um die technischen Metadaten des Application Object Tree (AOT) — Tabellen, Felder, Extended Data Types (EDTs), Enums, Relations, Views, Data Entities, Indizes, Field Groups und Delete Actions — vollständig, versioniert und maschinenlesbar zu exportieren.
 
-> **Hinweis:** Status 4 (Ended) macht in der Regel den größten Teil der Historie aus und ist der Haupttreiber für den Speicherverbrauch.
+Ziel dieses Projekts ist der Aufbau eines **D365 Metadaten-Dictionarys**: eines automatisierten, in R implementierten Exports, der die technischen Metadaten direkt aus den XML-Quelldateien des Modellspeichers (`PackagesLocalDirectory`) ausliest und als strukturierte CSV-Dateien bereitstellt.
+
+Das Dictionary bildet damit eine **vollständige, versionsgenaue Momentaufnahme** des technischen Datenmodells einer D365FO-Umgebung (hier: Version 10.0.46 / PU70) — unabhängig von Laufzeitzugriffen auf die Anwendung selbst.
+
+### 1.2 Nutzen des Metadatenexports
+
+| Nutzen | Beschreibung |
+|--------|-------------|
+| **Vollständige Dokumentation** | Alle Tabellen, Felder und deren Beziehungen sind zentral und durchsuchbar erfasst — unabhängig vom Wissen einzelner Entwickler. |
+| **Automatisierbarkeit** | Der Export lässt sich als wiederkehrender, planbarer R-Job ausführen und bei jedem Release-Wechsel (Update, PU) neu erzeugen. |
+| **Versionsvergleich** | Zwei Exportstände (z. B. vor/nach einem Platform Update) lassen sich als CSV-Diff vergleichen, um Schema-Änderungen sichtbar zu machen. |
+| **Systemunabhängigkeit** | Der Export basiert ausschließlich auf lokal vorliegenden XML-Dateien — kein Laufzeitzugriff auf die D365-Anwendung, keine Batch-Last auf der Umgebung. |
+| **Wiederverwendbarkeit** | Die erzeugten CSV-Dateien können direkt in SQL Server, Microsoft Fabric, Power BI oder einen Data Catalog importiert werden (siehe Kap. 7). |
+
+### 1.3 Zielgruppen
+
+| Zielgruppe | Anwendungsfall |
+|------------|-----------------|
+| **Datenmigration** | Identifikation von Tabellen, Schlüsselfeldern, Pflichtfeldern und Relations als Grundlage für Mapping- und Transformationsregeln. |
+| **Architektur** | Nachvollziehbarkeit von Tabellenbeziehungen, Delete-Actions und Erweiterungen (Customizations) im Datenmodell. |
+| **BI / Power BI** | Aufbau von Sternschema-Dokumentationen, automatisierter Spaltenbeschreibungen und Datenkatalogen für Power-BI-Modelle. |
+| **Data Catalog** | Bereitstellung strukturierter technischer Metadaten für unternehmensweite Data-Catalog- bzw. Data-Governance-Lösungen (z. B. Microsoft Purview). |
+| **Impact-Analyse** | Bewertung der Auswirkungen von Änderungen an einer Tabelle/EDT/Enum anhand ihrer dokumentierten Relations, Field Groups und referenzierenden Objekte. |
 
 ---
 
-## Abfrage 1: Batch-Historie nach Status
+## 2. Architekturentscheidung
 
-### SQL-Abfrage
+### 2.1 Ursprünglich geplanter Ansatz (X++)
 
+Der ursprüngliche Plan sah vor, den Metadatenexport **innerhalb der D365FO-Anwendung selbst per X++** umzusetzen — analog zu klassischen AOT-Reflection-Ansätzen, wie sie aus AX 2012 bekannt sind. Der Ansatz sollte laufzeitbasiert über Metadaten-Provider-Klassen sämtliche Tabellenobjekte durchlaufen und deren Struktur (Felder, Relations, Delete Actions) direkt aus dem Kernel auslesen.
 
-```{sql connection=cnn}
-SELECT
-    STATUS,
-    CASE STATUS
-        WHEN 0 THEN 'Withhold'
-        WHEN 1 THEN 'Waiting'
-        WHEN 2 THEN 'Executing'
-        WHEN 3 THEN 'Error'
-        WHEN 4 THEN 'Ended'
-        WHEN 5 THEN 'Cancelled'
-        WHEN 7 THEN 'Ready'
-        WHEN 8 THEN 'Canceled'
-        ELSE CONCAT('Unknown (', STATUS, ')')
-    END AS StatusName,
-    COUNT(*) AS RecordCount,
-    CAST(
-        SUM(
-            DATALENGTH(RECID)
-            + DATALENGTH(CREATEDDATETIME)
-            + DATALENGTH(COMPANY)
-            + DATALENGTH(CAPTION)
-        ) / 1024.0 / 1024.0
-        AS DECIMAL(18,2)
-    ) AS SizeMB
-FROM BATCHHISTORY
-GROUP BY STATUS
-ORDER BY RecordCount DESC;
+```xpp
+// Illustrativ – urspruenglich geplanter, NICHT lauffaehiger Ansatz
+static void ExportTableMetadata(Args _args)
+{
+    MetadataProvider    metadataProvider;   // Klasse in der Zielumgebung nicht verfuegbar
+    MetadataSupport     metadataSupport;    // Klasse in der Zielumgebung nicht verfuegbar
+    DictTable           dictTable;
+    DictRelation        dictRelation;
+    TableId             tableId;
+
+    for (tableId = 1; tableId <= metadataSupport.tableCount(); tableId++)
+    {
+        dictTable = new DictTable(tableId);
+
+        // dictTable.relationObject(...)       // Methode nicht auffindbar
+        // dictTable.deleteActionObject(...)   // Methode nicht auffindbar
+
+        // ... Export der Feld-, Relation- und Delete-Action-Struktur
+    }
+}
 ```
 
-### Beschreibung
+### 2.2 Gründe für das Scheitern des Ansatzes
 
-Diese Abfrage analysiert die Tabelle `BATCHHISTORY` und gruppiert alle Datensätze nach ihrem Batch-Status. Für jede Statusgruppe werden zwei Kennzahlen ermittelt: die Anzahl der Datensätze und der geschätzte Speicherverbrauch.
+Bei der Umsetzung in der Zielumgebung (Cloud Hosted VM, D365FO 10.0.46 / PU70) zeigte sich, dass mehrere für diesen Ansatz notwendige APIs und Klassen **nicht verfügbar bzw. nicht referenzierbar** waren:
 
-### Kennzahlen
+- `MetadataProvider` — Klasse nicht auffindbar
+- `MetadataSupport` — Klasse nicht auffindbar
+- `DictDeleteAction` — Klasse nicht auffindbar
+- `DictTable.relationObject()` — Methode nicht verfügbar
+- `DictTable.deleteActionObject()` — Methode nicht verfügbar
 
-#### RecordCount
-Anzahl der Datensätze in der Batch-Historie mit dem jeweiligen Status.
+Ein produktiver, lauffähiger X++-Export der vollständigen AOT-Struktur (insbesondere Relations und Delete Actions) war damit **in der vorliegenden Umgebung nicht realisierbar**. Ein Nacharbeiten über alternative, undokumentierte Kernel-Schnittstellen wurde aus Stabilitäts- und Wartbarkeitsgründen bewusst nicht verfolgt.
 
-**Beispiel:** `Status = Ended, RecordCount = 2.500.000` bedeutet, dass 2,5 Millionen Batch-Ausführungen erfolgreich abgeschlossen wurden und weiterhin in der Historie gespeichert sind.
+### 2.3 Begründung für den Wechsel auf XML-basierte Metadatenextraktion mittels R
 
-#### SizeMB
-Geschätzter Speicherverbrauch der Datensätze je Status in Megabyte.
+Da D365FO seit der Umstellung auf die paket-/modellbasierte Architektur (Package-Model-Architecture) **alle AOT-Objekte als individuelle XML-Dateien im Modellspeicher** ablegt, liegt die vollständige Metadatenstruktur bereits **statisch und dateibasiert** vor:
 
-Die Berechnung basiert auf den Spalten:
-- `RECID` — eindeutiger Datensatzschlüssel
-- `CREATEDDATETIME` — Erstellungszeitpunkt
-- `COMPANY` — Mandant
-- `CAPTION` — Beschriftung / Jobbezeichnung
-
-> Die Berechnung über `DATALENGTH()` liefert eine **Schätzung** des belegten Speichers für die ausgewählten Spalten. Der tatsächliche Speicherbedarf auf Datenbankebene (inkl. Indizes, Seiten-Overhead) ist höher. Der Wert dient als relativer Vergleich zwischen den Statusgruppen.
-
-### Fachliche Interpretation
-
-Mit dieser Auswertung kann beantwortet werden:
-
-- Welche Status kommen am häufigsten vor?
-- Welche Status verursachen den größten Speicherverbrauch?
-- Wie hoch ist der Anteil erfolgreich abgeschlossener Batch-Jobs?
-- Wie viele fehlerhafte Ausführungen befinden sich in der Historie?
-- Welche Statusgruppen eignen sich für Archivierungs- oder Bereinigungsmaßnahmen?
-
-### Beispielhafte Ausgabe
-
-| STATUS | StatusName | RecordCount | SizeMB |
-|--------|------------|-------------|--------|
-| 4 | Ended | 2.500.000 | 980 |
-| 3 | Error | 18.000 | 9 |
-| 5 | Cancelled | 5.000 | 2 |
-
-**Interpretation:** Error-Datensätze sind zwar zahlenmäßig gering, sollten aber separat überwacht werden, um wiederkehrende Fehler zu identifizieren. Der Status "Ended" repräsentiert typischerweise das größte Volumen und ist der Haupttreiber für den Speicherverbrauch.
-
----
-
-## Abfrage 2: Batch-Historie nach Status und Alter
-
-### SQL-Abfrage
-
-```{sql connection=cnn}
-SELECT
-    STATUS,
-    CASE STATUS
-        WHEN 0 THEN 'Withhold'
-        WHEN 1 THEN 'Waiting'
-        WHEN 2 THEN 'Executing'
-        WHEN 3 THEN 'Error'
-        WHEN 4 THEN 'Ended'
-        WHEN 5 THEN 'Cancelled'
-        WHEN 7 THEN 'Ready'
-        WHEN 8 THEN 'Canceled'
-        ELSE CONCAT('Unknown (', STATUS, ')')
-    END AS StatusName,
-    CASE
-        WHEN CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())
-            THEN 'Last 2 Months'
-        ELSE 'Older than 2 Months'
-    END AS DateGroup,
-    COUNT(*) AS RecordCount,
-    CAST(
-        SUM(
-            DATALENGTH(RECID)
-            + DATALENGTH(CREATEDDATETIME)
-            + DATALENGTH(COMPANY)
-            + DATALENGTH(CAPTION)
-        ) / 1024.0 / 1024.0
-        AS DECIMAL(18,2)
-    ) AS SizeMB
-FROM BATCHHISTORY
-GROUP BY
-    STATUS,
-    CASE
-        WHEN CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())
-            THEN 'Last 2 Months'
-        ELSE 'Older than 2 Months'
-    END
-ORDER BY
-    STATUS,
-    DateGroup;
+```
+K:\AosService\PackagesLocalDirectory\<Package>\<Model>\AxTable\<TableName>.xml
+K:\AosService\PackagesLocalDirectory\<Package>\<Model>\AxEnum\<EnumName>.xml
+K:\AosService\PackagesLocalDirectory\<Package>\<Model>\AxEdt\<EdtName>.xml
+K:\AosService\PackagesLocalDirectory\<Package>\<Model>\AxView\<ViewName>.xml
+K:\AosService\PackagesLocalDirectory\<Package>\<Model>\AxDataEntityView\<EntityName>.xml
 ```
 
-### Beschreibung
+Daraus ergibt sich ein Ansatz, der ohne Laufzeitzugriff auf die D365-Anwendung auskommt:
 
-Diese Abfrage erweitert die erste Analyse um eine zeitliche Dimension. Alle Datensätze werden in zwei Altersgruppen eingeteilt:
+| Kriterium | X++ (Runtime-Reflection) | XML-Export mittels R |
+|-----------|---------------------------|------------------------|
+| Abhängigkeit von AOS/Laufzeit | Ja | Nein — reiner Dateizugriff |
+| Verfügbarkeit der benötigten APIs | Nicht gegeben (siehe 2.2) | Nicht erforderlich |
+| Batch-Last auf der D365-Umgebung | Ja | Nein |
+| Ausführbar außerhalb von D365 (z. B. lokal, CI/CD) | Nein | Ja |
+| Weiterverarbeitung (CSV, SQL, Power BI) | Zusätzlicher Exportschritt nötig | Direktes Ergebnis des R-Skripts |
+| Wartungsaufwand bei API-Änderungen | Hoch (Kernel-Klassen) | Gering (stabiles XML-Schema) |
 
-**Letzte 2 Monate** (`Last 2 Months`)  
-Datensätze mit `CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())` — aktuelle operative Historie.
-
-**Älter als 2 Monate** (`Older than 2 Months`)  
-Datensätze, deren Erstellungsdatum mehr als zwei Monate zurückliegt — historische Daten und potenzielle Kandidaten für Archivierung oder Bereinigung.
-
-### Kennzahlen
-
-| Kennzahl | Beschreibung |
-|----------|-------------|
-| `DateGroup` | Altersgruppe: `Last 2 Months` oder `Older than 2 Months` |
-| `RecordCount` | Anzahl der Datensätze je Status und Altersgruppe |
-| `SizeMB` | Geschätzter Speicherverbrauch je Kombination aus Status und Altersgruppe |
-
-### Fachliche Interpretation
-
-- Wie viel der Batch-Historie ist älter als zwei Monate?
-- Welche Status verursachen den größten historischen Datenbestand?
-- Wie groß ist der Speicherverbrauch alter Historieneinträge?
-- Welches Einsparpotenzial ergibt sich durch die Bereinigung älterer Datensätze?
-
-### Beispielhafte Ausgabe
-
-| StatusName | DateGroup | RecordCount | SizeMB |
-|------------|-----------|-------------|--------|
-| Ended | Last 2 Months | 120.000 | 45 |
-| Ended | Older than 2 Months | 2.500.000 | 980 |
-| Error | Last 2 Months | 1.200 | 0,6 |
-| Error | Older than 2 Months | 18.000 | 9 |
-
-**Interpretation:**
-- Nur 120.000 von 2.620.000 abgeschlossenen Ausführungen stammen aus den letzten zwei Monaten (~4,6 %)
-- Der überwiegende Teil der Historie ist älter als zwei Monate
-- Eine Bereinigung älterer Datensätze könnte den Speicherbedarf um ca. 95 % reduzieren, ohne die aktuelle operative Historie zu beeinträchtigen
+Die Entscheidung fiel daher auf eine **vollständig in R implementierte Lösung**, die die XML-Metadatendateien aus `PackagesLocalDirectory` liest, mit dem Paket `xml2` parst und in normalisierte CSV-Dateien überführt. Dieser Ansatz ist robust gegenüber fehlenden/geänderten X++-APIs, unabhängig von der D365-Laufzeit ausführbar und lässt sich direkt in bestehende R-basierte Auswertungs- und BI-Prozesse einbetten (vgl. `Entity_Comparison_Export.R` in diesem Repository, das bereits einen ähnlichen AOT-XML-Lesezugriff für Data Entities nutzt).
 
 ---
 
-## Abfrage 3: Tatsächliche Tabellengröße (Datenbankebene)
+## 3. Zielmodell
 
-### SQL-Abfrage
+Der Export erzeugt zehn CSV-Dateien, die gemeinsam das technische Datenmodell von D365FO abbilden.
 
-```{sql connection=cnn}
-SELECT *
-FROM (
-    SELECT TOP 15
-        s.Name  AS SchemaName,
-        t.Name  AS TableName,
-        p.rows  AS RowCounts,
-        CAST(ROUND((SUM(a.used_pages)  / 128.00), 2) AS NUMERIC(36, 2)) AS Used_MB,
-        CAST(ROUND((SUM(a.total_pages) - SUM(a.used_pages)) / 128.00, 2)
-             AS NUMERIC(36, 2)) AS Unused_MB,
-        CAST(ROUND((SUM(a.total_pages) / 128.00), 2) AS NUMERIC(36, 2)) AS Total_MB
-    FROM sys.tables t
-    INNER JOIN sys.indexes        i ON t.OBJECT_ID  = i.object_id
-    INNER JOIN sys.partitions     p ON i.object_id  = p.OBJECT_ID
-                                   AND i.index_id   = p.index_id
-    INNER JOIN sys.allocation_units a ON p.partition_id = a.container_id
-    INNER JOIN sys.schemas        s ON t.schema_id  = s.schema_id
-    GROUP BY t.Name, s.Name, p.Rows
-) T
-WHERE T.TableName = 'batchhistory';
+### 3.1 `Tables.csv`
+
+- **Zweck:** Kopfdaten aller Tabellen (Name, Label, Tabellengruppe, Konfigurationsschlüssel).
+- **Wichtige Spalten:** `TableName`, `Label`, `TableGroup`, `ConfigurationKey`, `SaveDataPerCompany`, `FieldCount`, `IndexCount`, `RelationCount`.
+- **Nutzen:** Ausgangspunkt jeder Analyse — Einstiegspunkt für Migrations-Scoping, Impact-Analyse und Data-Catalog-Einträge auf Tabellenebene.
+
+### 3.2 `Fields.csv`
+
+- **Zweck:** Alle Felder je Tabelle inkl. Datentyp und Pflichtstatus.
+- **Wichtige Spalten:** `TableName`, `FieldName`, `FieldType`, `ExtendedDataType`, `EnumType`, `Mandatory`, `ArrayLength`.
+- **Nutzen:** Grundlage für Mapping-Tabellen in der Datenmigration und für die Spaltendokumentation in BI-Modellen.
+
+### 3.3 `EDTs.csv`
+
+- **Zweck:** Extended Data Types inkl. Basistyp, Größe und Vererbungskette.
+- **Wichtige Spalten:** `EdtName`, `BaseType`, `Extends`, `StringSize`, `EnumType`.
+- **Nutzen:** Klärt fachliche Bedeutung und technische Constraints (z. B. Feldlängen) unabhängig von der konkreten Tabelle.
+
+### 3.4 `Enums.csv`
+
+- **Zweck:** Alle Enums mit ihren Wertelisten (eine Zeile je Enum-Wert).
+- **Wichtige Spalten:** `EnumName`, `ValueName`, `ValueNumber`, `ValueLabel`.
+- **Nutzen:** Auflösung numerischer Enum-Werte aus SQL-/BI-Abfragen in lesbare Bezeichnungen (Lookup-Tabelle).
+
+### 3.5 `Relations.csv`
+
+- **Zweck:** Tabellenbeziehungen (Foreign-Key-artige Relations) inkl. Kardinalität und Feldabgleich.
+- **Wichtige Spalten:** `TableName`, `RelationName`, `RelatedTable`, `Cardinality`, `ConstraintFields`.
+- **Nutzen:** Basis für Entity-Relationship-Diagramme und automatisierte Join-Vorschläge in BI-Modellen.
+
+### 3.6 `Views.csv`
+
+- **Zweck:** Alle Views inkl. zugrunde liegender Haupttabelle.
+- **Wichtige Spalten:** `ViewName`, `Label`, `PrimaryTable`, `DataSourceCount`, `FieldCount`.
+- **Nutzen:** Identifikation vorgefertigter, bereits aggregierter/gejointer Datenquellen für Reporting.
+
+### 3.7 `DataEntities.csv`
+
+- **Zweck:** Alle Data Entities (OData/Data-Management-fähige Views) inkl. Public-Name und Primärschlüssel.
+- **Wichtige Spalten:** `EntityName`, `PublicEntityName`, `PublicCollectionName`, `EntityCategory`, `PrimaryKeyFields`, `DataManagementEnabled`.
+- **Nutzen:** Zentrale Referenz für Integrationen (OData, Data Management Framework) und Migrationsprojekte.
+
+### 3.8 `Indexes.csv`
+
+- **Zweck:** Alle Tabellenindizes inkl. Alternate-Key-Kennzeichnung und zugehöriger Felder.
+- **Wichtige Spalten:** `TableName`, `IndexName`, `AlternateKey`, `AllowDuplicates`, `Fields`.
+- **Nutzen:** Identifikation natürlicher Schlüssel für die Datenmigration und Performance-Analysen.
+
+### 3.9 `DeleteActions.csv`
+
+- **Zweck:** Kaskadierungsregeln beim Löschen von Datensätzen (Cascade, Restricted, CascadeIfEmpty).
+- **Wichtige Spalten:** `TableName`, `DeleteActionName`, `RelatedTable`, `DeleteAction`.
+- **Nutzen:** Abschätzung der Auswirkungen von Löschvorgängen — zentral für Datenbereinigung und Impact-Analyse.
+
+### 3.10 `FieldGroups.csv`
+
+- **Zweck:** Fachliche Feldgruppierungen einer Tabelle (z. B. für Formulare/AutoReport).
+- **Wichtige Spalten:** `TableName`, `FieldGroupName`, `Label`, `Fields`.
+- **Nutzen:** Unterstützt die fachliche Gruppierung von Feldern in Dokumentation und BI-Modellen (analog zu Anzeigegruppen in der Anwendung).
+
+---
+
+## 4. Projektstatus
+
+| Export | Status | Bemerkung |
+|--------|--------|-----------|
+| `Tables.csv` | ✅ umgesetzt | Basis für alle weiteren Auswertungen |
+| `Fields.csv` | ✅ umgesetzt | Feldtyp wird aus dem `i:type`-Attribut abgeleitet |
+| `EDTs.csv` | ✅ umgesetzt | Basistyp wird aus dem Root-Elementnamen abgeleitet |
+| `Enums.csv` | ✅ umgesetzt | eine Zeile je Enum-Wert |
+| `Relations.csv` | ✅ umgesetzt | inkl. aufgelöster Feldpaare (`Field=RelatedField`) |
+| `Views.csv` | ✅ umgesetzt | primäre Datenquelle je View |
+| `DataEntities.csv` | ✅ umgesetzt | inkl. Public Entity Name / Collection Name |
+| `Indexes.csv` | ✅ umgesetzt | inkl. Alternate-Key-Kennzeichen |
+| `FieldGroups.csv` | ✅ umgesetzt | inkl. aufgelöster Feldliste |
+| `DeleteActions.csv` | ✅ umgesetzt | inkl. referenzierter Relation |
+| Single-Pass-Export `export_all_table_metadata()` | ✅ umgesetzt | Performance-Optimierung: ein XML-Parse-Durchlauf je Tabelle statt fünf |
+| Parallelisierung via `furrr` | ⏳ geplant | für Umgebungen mit sehr hoher Objektanzahl (> 20.000 Tabellen-XML-Dateien) |
+| Automatische Power-BI-Dokumentation | ⏳ geplant | siehe Kap. 8 |
+| Data-Dictionary-Generierung (HTML/Confluence) | ⏳ geplant | siehe Kap. 8 |
+| Excel-Workbook-Export | ⏳ geplant | analog zu `Entity_Comparison_Export.R` in diesem Repository |
+| Entity-Relationship-Diagramme | ⏳ geplant | siehe Kap. 8 |
+| Datenmigrations-Mapping | ⏳ geplant | siehe Kap. 8 |
+| KI-/RAG-Wissensdatenbank | ⏳ geplant | siehe Kap. 8 |
+
+**Kennzeichen:** ✅ umgesetzt · ⏳ geplant
+
+---
+
+## 5. Technische Voraussetzungen
+
+### 5.1 Benötigte R-Pakete
+
+| Paket | Verwendung |
+|-------|-----------|
+| `xml2` | Einlesen und Parsen der AOT-XML-Dateien (XPath-Abfragen) |
+| `dplyr` | Datenaufbereitung, Joins, `mutate`/`arrange`/`filter` |
+| `purrr` | Funktionale Iteration über Dateilisten (`map`, `map_dfr`) |
+| `stringr` | Textverarbeitung (z. B. Entfernen von Typ-Präfixen wie `AxTableField`) |
+| `readr` | Schreiben der CSV-Dateien (UTF-8-BOM, Excel-kompatibles Trennzeichen) |
+| `fs` | Verzeichnis-/Pfadoperationen (`dir_create`) |
+| `tibble` | Konsistente, typsichere Tabellenobjekte |
+| `furrr` / `future` *(optional)* | Parallelisierung des Exports bei sehr großen Umgebungen |
+
+> **Hinweis zu `map_dfr()`:** Die Funktion ist ab purrr 1.0 als *soft-deprecated* markiert, bleibt jedoch funktionsfähig. Alternativ kann `purrr::list_rbind(purrr::map(...))` verwendet werden. Aus Gründen der Lesbarkeit wird in diesem Dokument `map_dfr()` verwendet.
+
+```r
+install.packages(c("xml2", "dplyr", "purrr", "stringr", "readr", "fs", "tibble"))
+# optional, fuer Parallelisierung:
+install.packages(c("furrr", "future"))
 ```
 
-### Beschreibung
+### 5.2 Verzeichnisstruktur (Projektempfehlung)
 
-Diese Abfrage liest die tatsächliche Tabellengröße direkt aus den SQL-Server-Systemkatalogen (`sys.tables`, `sys.indexes`, `sys.partitions`, `sys.allocation_units`). Anders als die `DATALENGTH()`-Schätzung in Abfrage 1 und 2 liefert sie den **realen Speicherbedarf auf Datenbankebene** — inklusive Indizes und Seiten-Overhead.
-
-### Kennzahlen
-
-| Kennzahl | Beschreibung |
-|----------|-------------|
-| `RowCounts` | Anzahl der Zeilen in der Tabelle laut Partitionsstatistik |
-| `Used_MB` | Tatsächlich genutzter Speicher (Daten + Indizes) in MB |
-| `Unused_MB` | Reservierter, aber noch nicht genutzter Speicher (freie Seiten) in MB |
-| `Total_MB` | Gesamter für die Tabelle reservierter Speicher (`Used_MB + Unused_MB`) |
-
-> **Hinweis:** `RowCounts` stammt aus den Partitionsstatistiken und kann bei veralteten Statistiken leicht abweichen. Für genaue Werte: `UPDATE STATISTICS BATCHHISTORY` vor der Abfrage ausführen.
-
-### Fachliche Interpretation
-
-- Wie viel Speicher belegt die `BATCHHISTORY`-Tabelle insgesamt auf der Datenbank?
-- Wie groß ist der Overhead durch Indizes im Vergleich zu den reinen Datenseiten?
-- Wie viel ungenutzter Speicher ist reserviert — d.h. nach einer Bereinigung sofort rückgewinnbar?
-
----
-
-## Abfrage 4: Top 10 Batch-Jobs nach Historienvolumen
-
-### SQL-Abfrage
-
-```{sql connection=cnn}
-SELECT TOP 10
-    bh.BATCHJOBID,
-    bh.CAPTION,
-    COUNT(*)                    AS ct,
-    MAX(bh.CREATEDDATETIME)     AS lst
-FROM [dbo].[batchhistory] bh
-GROUP BY
-    bh.BATCHJOBID,
-    bh.CAPTION
-ORDER BY ct DESC;
+```
+D365_Metadata_Export/
+├── R/
+│   ├── 00_helpers.R              # gemeinsame Hilfsfunktionen (list_aot_files, xml_text_safe, ...)
+│   ├── 01_export_tables.R
+│   ├── 02_export_fields.R
+│   ├── 03_export_edts.R
+│   ├── 04_export_enums.R
+│   ├── 05_export_relations.R
+│   ├── 06_export_views.R
+│   ├── 07_export_data_entities.R
+│   ├── 08_export_indexes.R
+│   ├── 09_export_field_groups.R
+│   └── 10_export_delete_actions.R
+├── Output/                       # generierte CSV-Dateien (siehe Kap. 7)
+├── Log/                          # Lauf-Protokolle
+├── config.R                      # zentrale Konfiguration (siehe 5.3)
+└── run_export.R                  # Hauptskript, fuehrt alle Exporte aus
 ```
 
-### Beschreibung
+### 5.3 Konfigurationsparameter
 
-Diese Abfrage identifiziert die **10 Batch-Jobs, die die meisten Einträge in der Historie erzeugt haben**. Jeder Batch-Job wird durch `BATCHJOBID` eindeutig identifiziert; `CAPTION` enthält den lesbaren Anzeigenamen.
-
-### Kennzahlen
-
-| Kennzahl | Beschreibung |
-|----------|-------------|
-| `BATCHJOBID` | Technische ID des Batch-Jobs in D365 |
-| `CAPTION` | Anzeigename des Batch-Jobs (aus der D365-Konfiguration) |
-| `ct` | Anzahl der Historieneinträge dieses Jobs (= wie oft er ausgeführt wurde und Spuren hinterlassen hat) |
-| `lst` | Zeitpunkt der letzten Ausführung (`CREATEDDATETIME` MAX) |
-
-### Fachliche Interpretation
-
-- Welche Batch-Jobs erzeugen das größte Historienvolumen?
-- Gibt es Jobs, die unverhältnismäßig oft ausgeführt werden (z.B. stündlich oder minütlich)?
-- Welche Jobs sind primäre Kandidaten für eine **Historienbegrenzung oder verkürzte Aufbewahrungsfrist**?
-- Wann wurde ein Job zuletzt ausgeführt — ist er noch aktiv oder kann er deaktiviert werden?
-
-### Typisches Ergebnismuster
-
-Jobs mit sehr hohem `ct` bei gleichzeitig kurzem Intervall (z.B. alle 5 Minuten) sind die Hauptverursacher des Tabellenwachstums. Für diese Jobs empfiehlt sich:
-
-1. Historienlimit in D365 setzen: `Systemverwaltung > Batch-Jobs > [Job auswählen] > Aufgabenhistorie`
-2. Ausführungsintervall prüfen und ggf. verlängern
-
----
-
-## Ergänzungsabfrage: Prozentuale Altersverteilung
-
-```{sql connection=cnn}
-SELECT
-    CASE
-        WHEN CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())
-            THEN 'Last 2 Months'
-        ELSE 'Older than 2 Months'
-    END AS DateGroup,
-    COUNT(*) AS RecordCount,
-    CAST(
-        COUNT(*) * 100.0 / SUM(COUNT(*)) OVER()
-        AS DECIMAL(5,2)
-    ) AS PercentOfTotal
-FROM BATCHHISTORY
-GROUP BY
-    CASE
-        WHEN CREATEDDATETIME >= DATEADD(MONTH, -2, GETDATE())
-            THEN 'Last 2 Months'
-        ELSE 'Older than 2 Months'
-    END;
+```r
+cfg <- list(
+  aot_root   = "K:/AosService/PackagesLocalDirectory",  # Wurzelverzeichnis des Modellspeichers
+  output_dir = "C:/D365_Metadata_Export/Output",         # Zielverzeichnis der CSV-Exporte
+  models     = NULL                                       # NULL = alle Modelle; sonst z.B. c("ApplicationSuite", "CustomModel")
+)
 ```
 
-Diese Abfrage zeigt die prozentuale Verteilung der Datensätze auf die beiden Altersgruppen — unabhängig vom Status. Sie eignet sich als KPI-Tile im Power-BI-Bericht.
+| Parameter | Beschreibung |
+|-----------|-------------|
+| `aot_root` | Wurzelverzeichnis des D365FO-Modellspeichers auf der Cloud Hosted VM. |
+| `output_dir` | Zielverzeichnis für die erzeugten CSV-Dateien; wird bei Bedarf automatisch angelegt. |
+| `models` | Optionale Filterung auf bestimmte Modelle (z. B. nur Custom-Erweiterungen statt aller Standardmodelle). `NULL` exportiert alle gefundenen Modelle. |
 
 ---
 
-## Empfehlungen für den Power-BI-Bericht
+## 6. Implementierung
 
-### Visualisierungen
+Alle nachfolgenden Funktionen greifen auf einen gemeinsamen Satz an Hilfsfunktionen zurück (Abschnitt 6.0). Diese sollten in `R/00_helpers.R` abgelegt und zu Beginn jedes Exportskripts per `source()` eingebunden werden.
 
-| Visual | Datenquelle | Zweck |
-|--------|-------------|-------|
-| Balkendiagramm (RecordCount je Status) | Abfrage 1 | Volumen je Statusgruppe |
-| Kreisdiagramm (SizeMB je Status) | Abfrage 1 | Speicheranteil je Status |
-| Gestapeltes Balkendiagramm (Status × Altersgruppe) | Abfrage 2 | Altersverteilung je Status |
-| KPI-Kacheln (Used_MB, Total_MB) | Abfrage 3 | Realer Tabellenspeicher auf einen Blick |
-| Balkendiagramm (Top 10 Jobs nach ct) | Abfrage 4 | Hauptverursacher Historienvolumen |
-| KPI-Kachel (% Older than 2 Months) | Ergänzungsabfrage | Handlungsbedarf auf einen Blick |
+> **Praxishinweis — Namespaces in D365-AOT-XML:** Die AOT-XML-Dateien deklarieren den Namespace-Präfix `i` (`xmlns:i="http://www.w3.org/2001/XMLSchema-instance"`) für polymorphe Attribute wie `i:type`. `xml2::xml_attr(node, "type")` löst diesen Präfix i. d. R. ohne weitere Konfiguration auf. Sollte dies in einer konkreten Umgebung dennoch fehlschlagen (z. B. bei abweichender Namespace-Deklaration), empfiehlt sich der in `Entity_Comparison_Export.R` bereits verwendete Regex-Fallback (`D365Security::get_entity_aot_metadata()`) als robuste Alternative — insbesondere bei sehr großen Dateimengen, bei denen ein reiner Regex-Scan zudem spürbar schneller ist als ein vollständiger XML-Parse-Vorgang je Datei.
 
-### Fragestellungen für Stakeholder
+### 6.0 Gemeinsame Hilfsfunktionen
 
-- Welche Batch-Status erzeugen die meisten Historieneinträge?
-- Welche Status verursachen den größten Speicherbedarf?
-- Wie verteilt sich die Historie auf aktuelle und ältere Datensätze?
-- Wie groß ist das Speicherpotenzial für mögliche Cleanup-Maßnahmen?
-- Welche Statusgruppen sollten bei einer Bereinigung priorisiert werden?
+```r
+library(xml2)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(readr)
+library(fs)
+library(tibble)
 
-### Handlungsempfehlung
+# ---- Konfiguration ----
+cfg <- list(
+  aot_root   = "K:/AosService/PackagesLocalDirectory",
+  output_dir = "C:/D365_Metadata_Export/Output",
+  models     = NULL
+)
 
-Der Bericht unterstützt Entscheidungen zur **Datenaufbewahrung, Archivierung und Speicheroptimierung** im D365-System. Auf Basis der Ergebnisse kann eine Bereinigungsregel definiert werden, z.B.:
+dir_create(cfg$output_dir)
 
-> *Datensätze mit Status "Ended" oder "Cancelled", die älter als 6 Monate sind, werden archiviert oder gelöscht.*
+#' Listet alle AOT-XML-Dateien eines bestimmten Elementtyps
+#'
+#' Durchsucht `aot_root` rekursiv nach XML-Dateien und filtert diese ueber
+#' einen Pfad-Regex auf den gewuenschten AOT-Unterordner (z.B. "AxTable").
+#' Die Filterung erfolgt bewusst nicht ueber eine feste Verzeichnistiefe
+#' (`Package/Model/<Ordner>`), da `PackagesLocalDirectory` je nach Zugriffsart
+#' (lokales Laufwerk, UNC-Pfad, gemapptes Netzlaufwerk) sowohl mit Vorwaerts-
+#' als auch mit Rueckwaertsschraegstrichen und abweichender Tiefe auftreten
+#' kann.
+#'
+#' @param aot_root Wurzelverzeichnis (PackagesLocalDirectory)
+#' @param element_folder AOT-Unterordnername, z.B. "AxTable", "AxEnum", "AxEdt"
+#' @param models Optionaler Vektor mit Modellnamen zur Filterung (NULL = alle)
+#' @return Character-Vektor mit vollstaendigen Dateipfaden
+list_aot_files <- function(aot_root, element_folder, models = NULL) {
+  all_xml <- list.files(
+    aot_root,
+    pattern    = "\\.xml$",
+    recursive  = TRUE,
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
 
-Diese Regel ist in D365 über `Systemverwaltung > Periodische Aufgaben > Batch-Aufgabenhistorie bereinigen` konfigurierbar.
+  # Pfad-Filter: findet ".../AxTable/..." unabhaengig vom Trennzeichen (/ oder \)
+  folder_pattern <- sprintf("[/\\\\]%s[/\\\\]", element_folder)
+  element_files  <- all_xml[grepl(folder_pattern, all_xml, ignore.case = TRUE)]
+
+  if (!is.null(models)) {
+    # Modellname = uebergeordneter Ordner des Elementordners (.../<Model>/<element_folder>/datei.xml)
+    model_names   <- basename(dirname(dirname(element_files)))
+    element_files <- element_files[model_names %in% models]
+  }
+
+  element_files
+}
+
+#' Liest eine AOT-XML-Datei robust ein
+#'
+#' Einzelne Metadatendateien koennen unvollstaendig oder fehlerhaft sein
+#' (z.B. waehrend eines laufenden Compile-/Sync-Vorgangs auf der VM).
+#' `tryCatch` verhindert, dass ein einzelner Parse-Fehler den gesamten
+#' Exportlauf abbricht; betroffene Dateien werden stattdessen als Warnung
+#' protokolliert und uebersprungen.
+safe_read_xml <- function(file) {
+  tryCatch(
+    read_xml(file),
+    error = function(e) {
+      warning(sprintf("XML konnte nicht gelesen werden: %s (%s)", file, conditionMessage(e)))
+      NULL
+    }
+  )
+}
+
+#' Liest den Textinhalt des ersten XPath-Treffers robust aus
+#'
+#' Gibt `default` zurueck, falls der Knoten nicht existiert oder leer ist.
+#' Nutzt das xml2-Verhalten, wonach `xml_find_first()` bei keinem Treffer
+#' ein `xml_missing`-Objekt liefert, fuer das `is.na()` TRUE zurueckgibt.
+xml_text_safe <- function(node, xpath, default = NA_character_) {
+  hit <- xml_find_first(node, xpath)
+  if (length(hit) == 0 || is.na(hit)) return(default)
+  val <- xml_text(hit, trim = TRUE)
+  if (identical(val, "")) return(default)
+  val
+}
+
+#' Liest ein XML-Attribut robust aus (z.B. i:type)
+xml_attr_safe <- function(node, attr_name, default = NA_character_) {
+  val <- xml_attr(node, attr_name)
+  if (is.na(val) || identical(val, "")) return(default)
+  val
+}
+
+#' Schreibt ein data.frame als CSV mit UTF-8-BOM (Excel-kompatibel, ';' als Trennzeichen)
+write_metadata_csv <- function(df, file_name, cfg) {
+  out_path <- file.path(cfg$output_dir, file_name)
+  write_excel_csv2(df, out_path, na = "")
+  message(sprintf("Export geschrieben: %s (%d Zeilen)", out_path, nrow(df)))
+  invisible(out_path)
+}
+```
+
+> **Validierung der XML-Struktur:** Vor dem produktiven Einsatz sollte die tatsächliche Struktur der XML-Dateien der Zielumgebung geprüft werden, z. B. mit `xml2::xml_structure(read_xml(sample_file))`. Dies zeigt den vollständigen Elementbaum einer Beispieldatei und erlaubt es, die nachfolgenden XPath-Ausdrücke bei Bedarf an lokale Abweichungen (Version, Lokalisierung) anzupassen.
+
+### 6.1 Tabellen (`Tables.csv`)
+
+**Fachliche Beschreibung:** Jede Tabelle wird als eigenständige XML-Datei unterhalb von `AxTable` abgelegt. Der Wurzelknoten `<AxTable>` enthält sowohl Kopfeigenschaften (Name, Label, Tabellengruppe) als auch die verschachtelten Strukturen für Felder, Field Groups, Indizes, Relations und Delete Actions (siehe 6.2–6.10).
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<AxTable xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
+  <Name>CustTable</Name>
+  <Label>@SYS83891</Label>
+  <TableGroup>Group</TableGroup>
+  <ConfigurationKey>LedgerBasic</ConfigurationKey>
+  <SaveDataPerCompany>Yes</SaveDataPerCompany>
+  <CacheLookup>Found</CacheLookup>
+  <DeveloperDocumentation>Kundenstammtabelle</DeveloperDocumentation>
+  <Fields> ... </Fields>
+  <FieldGroups> ... </FieldGroups>
+  <Indexes> ... </Indexes>
+  <Relations> ... </Relations>
+  <DeleteActions> ... </DeleteActions>
+</AxTable>
+```
+
+**Vollständiger R-Code:**
+
+```r
+#' Liest die Kopfeigenschaften eines bereits geparsten <AxTable>-Knotens
+extract_table_header <- function(root) {
+  tibble(
+    TableName              = xml_text_safe(root, "Name"),
+    Label                  = xml_text_safe(root, "Label"),
+    TableGroup             = xml_text_safe(root, "TableGroup"),
+    ConfigurationKey       = xml_text_safe(root, "ConfigurationKey"),
+    SaveDataPerCompany     = xml_text_safe(root, "SaveDataPerCompany", "No"),
+    CacheLookup            = xml_text_safe(root, "CacheLookup"),
+    DeveloperDocumentation = xml_text_safe(root, "DeveloperDocumentation"),
+    FieldCount             = length(xml_find_all(root, "Fields/AxTableField")),
+    IndexCount             = length(xml_find_all(root, "Indexes/AxTableIndex")),
+    RelationCount          = length(xml_find_all(root, "Relations/AxTableRelation"))
+  )
+}
+
+export_tables <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxTable", cfg$models)
+
+  tables_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+    extract_table_header(root) |> mutate(SourceFile = f)
+  })
+
+  write_metadata_csv(tables_df, "Tables.csv", cfg)
+  tables_df
+}
+
+tables_export <- export_tables(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| TableName | Label | TableGroup | ConfigurationKey | SaveDataPerCompany | FieldCount | IndexCount | RelationCount |
+|-----------|-------|------------|-------------------|----------------------|------------|------------|---------------|
+| CustTable | @SYS83891 | Group | LedgerBasic | Yes | 187 | 14 | 22 |
+| VendTable | @SYS83892 | Group | LedgerBasic | Yes | 176 | 12 | 19 |
+
+### 6.2 Felder (`Fields.csv`)
+
+**Fachliche Beschreibung:** Felder sind unter `Fields/AxTableField` innerhalb der jeweiligen `AxTable`-Datei verschachtelt. Der konkrete Feldtyp (String, Int, Enum, Real, Date, UtcDateTime, Container, Guid, …) steht nicht als eigenes Element, sondern als polymorphes `i:type`-Attribut am `AxTableField`-Knoten (z. B. `i:type="AxTableFieldString"`).
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<Fields>
+  <AxTableField i:type="AxTableFieldString">
+    <Name>AccountNum</Name>
+    <ExtendedDataType>CustAccount</ExtendedDataType>
+    <Label>@SYS4471</Label>
+    <Mandatory>Yes</Mandatory>
+    <ArrayLength>0</ArrayLength>
+  </AxTableField>
+  <AxTableField i:type="AxTableFieldEnum">
+    <Name>Blocked</Name>
+    <EnumType>CustVendorBlocked</EnumType>
+    <Label>@SYS23233</Label>
+  </AxTableField>
+</Fields>
+```
+
+**Vollständiger R-Code:**
+
+```r
+#' Extrahiert alle Felder eines <AxTable>-Knotens
+extract_fields <- function(root, table_nm) {
+  field_nodes <- xml_find_all(root, "Fields/AxTableField")
+
+  map_dfr(field_nodes, function(fn) {
+    raw_type <- xml_attr_safe(fn, "type", "AxTableFieldUnknown")
+
+    tibble(
+      TableName         = table_nm,
+      FieldName         = xml_text_safe(fn, "Name"),
+      FieldType         = str_remove(raw_type, "^AxTableField"),
+      ExtendedDataType  = xml_text_safe(fn, "ExtendedDataType"),
+      EnumType          = xml_text_safe(fn, "EnumType"),
+      Label             = xml_text_safe(fn, "Label"),
+      Mandatory         = xml_text_safe(fn, "Mandatory", "No"),
+      AllowEdit         = xml_text_safe(fn, "AllowEdit", "Yes"),
+      Visible           = xml_text_safe(fn, "Visible", "Yes"),
+      ArrayLength       = xml_text_safe(fn, "ArrayLength", "0")
+    )
+  })
+}
+
+export_fields <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxTable", cfg$models)
+
+  fields_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+    table_nm <- xml_text_safe(root, "Name")
+    extract_fields(root, table_nm)
+  })
+
+  write_metadata_csv(fields_df, "Fields.csv", cfg)
+  fields_df
+}
+
+fields_export <- export_fields(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| TableName | FieldName | FieldType | ExtendedDataType | EnumType | Mandatory | ArrayLength |
+|-----------|-----------|-----------|-------------------|----------|-----------|-------------|
+| CustTable | AccountNum | String | CustAccount | | Yes | 0 |
+| CustTable | Blocked | Enum | | CustVendorBlocked | No | 0 |
+
+### 6.3 Extended Data Types (`EDTs.csv`)
+
+**Fachliche Beschreibung:** EDTs werden unterhalb von `AxEdt` als eigenständige XML-Dateien abgelegt. Im Gegensatz zu Feldern trägt hier nicht ein Attribut, sondern der **Name des Wurzelelements selbst** den konkreten Basistyp (`AxEdtString`, `AxEdtInt`, `AxEdtReal`, `AxEdtEnum`, `AxEdtDate`, `AxEdtContainer`, `AxEdtGuid`, …).
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<AxEdtString xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
+  <Name>CustAccount</Name>
+  <Label>@SYS4471</Label>
+  <Extends>AccountNum</Extends>
+  <StringSize>20</StringSize>
+  <ConfigurationKey>LedgerBasic</ConfigurationKey>
+</AxEdtString>
+```
+
+**Vollständiger R-Code:**
+
+```r
+export_edts <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxEdt", cfg$models)
+
+  edts_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+
+    tibble(
+      EdtName                = xml_text_safe(root, "Name"),
+      BaseType               = str_remove(xml_name(root), "^AxEdt"),
+      Label                  = xml_text_safe(root, "Label"),
+      Extends                = xml_text_safe(root, "Extends"),
+      ConfigurationKey       = xml_text_safe(root, "ConfigurationKey"),
+      StringSize             = xml_text_safe(root, "StringSize"),
+      EnumType               = xml_text_safe(root, "EnumType"),
+      DeveloperDocumentation = xml_text_safe(root, "DeveloperDocumentation")
+    )
+  })
+
+  write_metadata_csv(edts_df, "EDTs.csv", cfg)
+  edts_df
+}
+
+edts_export <- export_edts(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| EdtName | BaseType | Extends | StringSize | EnumType |
+|---------|----------|---------|------------|----------|
+| CustAccount | String | AccountNum | 20 | |
+| CustVendorBlocked | Enum | | | CustVendorBlocked |
+
+### 6.4 Enums (`Enums.csv`)
+
+**Fachliche Beschreibung:** Enums liegen unter `AxEnum`. Der Wurzelknoten enthält Name und Label des Enums sowie eine Liste `EnumValues/AxEnumValue` mit den einzelnen Werten. Für die Auflösung numerischer Werte in SQL/BI-Auswertungen wird je Enum-Wert eine eigene Zeile erzeugt.
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<AxEnum xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
+  <Name>NoYes</Name>
+  <Label>@SYS8879</Label>
+  <EnumValues>
+    <AxEnumValue>
+      <Name>No</Name>
+      <Label>@SYS8880</Label>
+      <Value>0</Value>
+    </AxEnumValue>
+    <AxEnumValue>
+      <Name>Yes</Name>
+      <Label>@SYS8881</Label>
+      <Value>1</Value>
+    </AxEnumValue>
+  </EnumValues>
+</AxEnum>
+```
+
+**Vollständiger R-Code:**
+
+```r
+export_enums <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxEnum", cfg$models)
+
+  enums_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+    enum_nm   <- xml_text_safe(root, "Name")
+    enum_lb   <- xml_text_safe(root, "Label")
+    value_nds <- xml_find_all(root, "EnumValues/AxEnumValue")
+
+    if (length(value_nds) == 0) {
+      return(tibble(
+        EnumName = enum_nm, EnumLabel = enum_lb,
+        ValueName = NA_character_, ValueNumber = NA_character_, ValueLabel = NA_character_
+      ))
+    }
+
+    map_dfr(value_nds, function(vn) {
+      tibble(
+        EnumName    = enum_nm,
+        EnumLabel   = enum_lb,
+        ValueName   = xml_text_safe(vn, "Name"),
+        ValueNumber = xml_text_safe(vn, "Value"),
+        ValueLabel  = xml_text_safe(vn, "Label")
+      )
+    })
+  })
+
+  write_metadata_csv(enums_df, "Enums.csv", cfg)
+  enums_df
+}
+
+enums_export <- export_enums(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| EnumName | ValueName | ValueNumber | ValueLabel |
+|----------|-----------|-------------|------------|
+| NoYes | No | 0 | @SYS8880 |
+| NoYes | Yes | 1 | @SYS8881 |
+
+### 6.5 Relations (`Relations.csv`)
+
+**Fachliche Beschreibung:** Relations sind unter `Relations/AxTableRelation` innerhalb der `AxTable`-Datei verschachtelt. Jede Relation referenziert eine verwandte Tabelle (`RelatedTable`) und enthält eine oder mehrere Feld-Constraints (`Constraints/AxTableRelationConstraint`), die das Join-Feldpaar definieren.
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<Relations>
+  <AxTableRelation>
+    <Name>CustGroup</Name>
+    <Cardinality>ZeroMany</Cardinality>
+    <RelatedTable>CustGroup</RelatedTable>
+    <RelatedTableCardinality>ZeroOne</RelatedTableCardinality>
+    <Constraints>
+      <AxTableRelationConstraint i:type="AxTableRelationConstraintField">
+        <Name>CustGroup</Name>
+        <Field>CustGroup</Field>
+        <RelatedField>CustGroup</RelatedField>
+      </AxTableRelationConstraint>
+    </Constraints>
+  </AxTableRelation>
+</Relations>
+```
+
+**Vollständiger R-Code:**
+
+```r
+#' Extrahiert alle Relations eines <AxTable>-Knotens
+extract_relations <- function(root, table_nm) {
+  rel_nodes <- xml_find_all(root, "Relations/AxTableRelation")
+
+  map_dfr(rel_nodes, function(rn) {
+    constraint_nodes <- xml_find_all(rn, "Constraints/AxTableRelationConstraint")
+
+    field_pairs <- map_chr(constraint_nodes, function(cn) {
+      fld     <- xml_text_safe(cn, "Field", "?")
+      rel_fld <- xml_text_safe(cn, "RelatedField", "?")
+      sprintf("%s=%s", fld, rel_fld)
+    })
+
+    tibble(
+      TableName             = table_nm,
+      RelationName          = xml_text_safe(rn, "Name"),
+      RelatedTable          = xml_text_safe(rn, "RelatedTable"),
+      Cardinality           = xml_text_safe(rn, "Cardinality"),
+      RelatedTableCardinality = xml_text_safe(rn, "RelatedTableCardinality"),
+      ConstraintFields      = paste(field_pairs, collapse = "; "),
+      ConstraintCount       = length(constraint_nodes)
+    )
+  })
+}
+
+export_relations <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxTable", cfg$models)
+
+  relations_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+    table_nm <- xml_text_safe(root, "Name")
+    extract_relations(root, table_nm)
+  })
+
+  write_metadata_csv(relations_df, "Relations.csv", cfg)
+  relations_df
+}
+
+relations_export <- export_relations(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| TableName | RelationName | RelatedTable | Cardinality | ConstraintFields |
+|-----------|--------------|--------------|-------------|-------------------|
+| CustTable | CustGroup | CustGroup | ZeroMany | CustGroup=CustGroup |
+
+### 6.6 Views (`Views.csv`)
+
+**Fachliche Beschreibung:** Views liegen unter `AxView`. Sie definieren eine oder mehrere Datenquellen (`DataSources/AxViewDataSource`) sowie eine Liste angezeigter Felder (`Fields/AxViewField`). Als primäre Tabelle wird die erste deklarierte Datenquelle herangezogen.
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<AxView xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
+  <Name>CustTableListPageView</Name>
+  <Label>@SYS12345</Label>
+  <Fields>
+    <AxViewField>
+      <Name>AccountNum</Name>
+      <DataSource>CustTable</DataSource>
+      <DataField>AccountNum</DataField>
+    </AxViewField>
+  </Fields>
+  <DataSources>
+    <AxViewDataSource>
+      <Name>CustTable</Name>
+      <Table>CustTable</Table>
+    </AxViewDataSource>
+  </DataSources>
+</AxView>
+```
+
+**Vollständiger R-Code:**
+
+```r
+export_views <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxView", cfg$models)
+
+  views_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+
+    ds_nodes    <- xml_find_all(root, "DataSources/AxViewDataSource")
+    field_nodes <- xml_find_all(root, "Fields/AxViewField")
+
+    tibble(
+      ViewName         = xml_text_safe(root, "Name"),
+      Label            = xml_text_safe(root, "Label"),
+      PrimaryTable     = if (length(ds_nodes) > 0) xml_text_safe(ds_nodes[[1]], "Table") else NA_character_,
+      DataSourceCount  = length(ds_nodes),
+      FieldCount       = length(field_nodes),
+      ConfigurationKey = xml_text_safe(root, "ConfigurationKey")
+    )
+  })
+
+  write_metadata_csv(views_df, "Views.csv", cfg)
+  views_df
+}
+
+views_export <- export_views(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| ViewName | PrimaryTable | DataSourceCount | FieldCount |
+|----------|--------------|------------------|------------|
+| CustTableListPageView | CustTable | 1 | 24 |
+
+### 6.7 Data Entities (`DataEntities.csv`)
+
+**Fachliche Beschreibung:** Data Entities sind technisch eine spezialisierte Form von Views und werden unter `AxDataEntityView` abgelegt. Zusätzlich zu den View-typischen Elementen enthalten sie Integrationsmetadaten wie den öffentlichen OData-Namen (`PublicEntityName`/`PublicCollectionName`), die Entitätskategorie sowie die Primärschlüsselfelder.
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<AxDataEntityView xmlns:i="http://www.w3.org/2001/XMLSchema-instance">
+  <Name>CustomersV3</Name>
+  <Label>@SYS12345</Label>
+  <EntityCategory>Master</EntityCategory>
+  <PublicEntityName>Customer</PublicEntityName>
+  <PublicCollectionName>Customers</PublicCollectionName>
+  <DataManagementEnabled>true</DataManagementEnabled>
+  <IsPublic>true</IsPublic>
+  <StagingTableName>CustomersV3Staging</StagingTableName>
+  <PrimaryKeyFields>
+    <AxDataEntityViewPrimaryKeyField>DataAreaId</AxDataEntityViewPrimaryKeyField>
+    <AxDataEntityViewPrimaryKeyField>CustomerAccount</AxDataEntityViewPrimaryKeyField>
+  </PrimaryKeyFields>
+  <DataSources> ... </DataSources>
+</AxDataEntityView>
+```
+
+**Vollständiger R-Code:**
+
+```r
+export_data_entities <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxDataEntityView", cfg$models)
+
+  entities_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+
+    ds_nodes <- xml_find_all(root, "DataSources/AxViewDataSource")
+    pk_nodes <- xml_find_all(root, "PrimaryKeyFields/AxDataEntityViewPrimaryKeyField")
+    pk_flds  <- paste(map_chr(pk_nodes, xml_text, trim = TRUE), collapse = "; ")
+
+    tibble(
+      EntityName            = xml_text_safe(root, "Name"),
+      PublicEntityName      = xml_text_safe(root, "PublicEntityName"),
+      PublicCollectionName  = xml_text_safe(root, "PublicCollectionName"),
+      Label                 = xml_text_safe(root, "Label"),
+      EntityCategory        = xml_text_safe(root, "EntityCategory"),
+      PrimaryTable          = if (length(ds_nodes) > 0) xml_text_safe(ds_nodes[[1]], "Table") else NA_character_,
+      PrimaryKeyFields      = pk_flds,
+      DataManagementEnabled = xml_text_safe(root, "DataManagementEnabled", "false"),
+      IsPublic              = xml_text_safe(root, "IsPublic", "false"),
+      StagingTableName      = xml_text_safe(root, "StagingTableName")
+    )
+  })
+
+  write_metadata_csv(entities_df, "DataEntities.csv", cfg)
+  entities_df
+}
+
+data_entities_export <- export_data_entities(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| EntityName | PublicEntityName | PublicCollectionName | EntityCategory | PrimaryKeyFields | DataManagementEnabled |
+|------------|-------------------|------------------------|------------------|---------------------|--------------------------|
+| CustomersV3 | Customer | Customers | Master | DataAreaId; CustomerAccount | true |
+
+### 6.8 Indizes (`Indexes.csv`)
+
+**Fachliche Beschreibung:** Indizes sind unter `Indexes/AxTableIndex` innerhalb der `AxTable`-Datei verschachtelt. Jeder Index kennzeichnet über `AlternateKey`, ob es sich um einen alternativen (fachlichen) Schlüssel handelt — ein zentrales Kriterium für die Datenmigration.
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<Indexes>
+  <AxTableIndex>
+    <Name>AccountIdx</Name>
+    <AlternateKey>Yes</AlternateKey>
+    <AllowDuplicates>No</AllowDuplicates>
+    <Fields>
+      <AxTableIndexField>
+        <DataField>AccountNum</DataField>
+      </AxTableIndexField>
+    </Fields>
+  </AxTableIndex>
+</Indexes>
+```
+
+**Vollständiger R-Code:**
+
+```r
+#' Extrahiert alle Indizes eines <AxTable>-Knotens
+extract_indexes <- function(root, table_nm) {
+  idx_nodes <- xml_find_all(root, "Indexes/AxTableIndex")
+
+  map_dfr(idx_nodes, function(idn) {
+    field_nodes <- xml_find_all(idn, "Fields/AxTableIndexField")
+    field_names <- map_chr(field_nodes, function(fn) xml_text_safe(fn, "DataField"))
+
+    tibble(
+      TableName       = table_nm,
+      IndexName       = xml_text_safe(idn, "Name"),
+      AlternateKey    = xml_text_safe(idn, "AlternateKey", "No"),
+      AllowDuplicates = xml_text_safe(idn, "AllowDuplicates", "No"),
+      Fields          = paste(field_names, collapse = "; "),
+      FieldCount      = length(field_nodes)
+    )
+  })
+}
+
+export_indexes <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxTable", cfg$models)
+
+  indexes_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+    table_nm <- xml_text_safe(root, "Name")
+    extract_indexes(root, table_nm)
+  })
+
+  write_metadata_csv(indexes_df, "Indexes.csv", cfg)
+  indexes_df
+}
+
+indexes_export <- export_indexes(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| TableName | IndexName | AlternateKey | AllowDuplicates | Fields |
+|-----------|-----------|---------------|-------------------|--------|
+| CustTable | AccountIdx | Yes | No | AccountNum |
+
+### 6.9 Field Groups (`FieldGroups.csv`)
+
+**Fachliche Beschreibung:** Field Groups sind unter `FieldGroups/AxTableFieldGroup` innerhalb der `AxTable`-Datei verschachtelt und fassen fachlich zusammengehörige Felder zusammen (z. B. für Formulardarstellungen oder AutoReport-Gruppen).
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<FieldGroups>
+  <AxTableFieldGroup>
+    <Name>AutoReport</Name>
+    <Label>@SYS9490</Label>
+    <Fields>
+      <AxTableFieldGroupField>
+        <DataField>AccountNum</DataField>
+      </AxTableFieldGroupField>
+      <AxTableFieldGroupField>
+        <DataField>Name</DataField>
+      </AxTableFieldGroupField>
+    </Fields>
+  </AxTableFieldGroup>
+</FieldGroups>
+```
+
+**Vollständiger R-Code:**
+
+```r
+#' Extrahiert alle Field Groups eines <AxTable>-Knotens
+extract_field_groups <- function(root, table_nm) {
+  fg_nodes <- xml_find_all(root, "FieldGroups/AxTableFieldGroup")
+
+  map_dfr(fg_nodes, function(fgn) {
+    field_nodes <- xml_find_all(fgn, "Fields/AxTableFieldGroupField")
+    field_names <- map_chr(field_nodes, function(fn) xml_text_safe(fn, "DataField"))
+
+    tibble(
+      TableName      = table_nm,
+      FieldGroupName = xml_text_safe(fgn, "Name"),
+      Label          = xml_text_safe(fgn, "Label"),
+      Fields         = paste(field_names, collapse = "; "),
+      FieldCount     = length(field_nodes)
+    )
+  })
+}
+
+export_field_groups <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxTable", cfg$models)
+
+  field_groups_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+    table_nm <- xml_text_safe(root, "Name")
+    extract_field_groups(root, table_nm)
+  })
+
+  write_metadata_csv(field_groups_df, "FieldGroups.csv", cfg)
+  field_groups_df
+}
+
+field_groups_export <- export_field_groups(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| TableName | FieldGroupName | Fields |
+|-----------|-----------------|--------|
+| CustTable | AutoReport | AccountNum; Name |
+
+### 6.10 Delete Actions (`DeleteActions.csv`)
+
+**Fachliche Beschreibung:** Delete Actions sind unter `DeleteActions/AxTableDeleteAction` innerhalb der `AxTable`-Datei verschachtelt und definieren, wie sich das Löschen eines Datensatzes auf verwandte Tabellen auswirkt (`Cascade`, `Restricted`, `CascadeIfEmpty`). Sie referenzieren die zugrunde liegende Relation über `DeleteActionRelation`.
+
+**Verwendete XML-Struktur (Auszug):**
+
+```xml
+<DeleteActions>
+  <AxTableDeleteAction>
+    <Name>DelCustTrans</Name>
+    <RelatedTable>CustTrans</RelatedTable>
+    <DeleteActionRelation>CustTrans</DeleteActionRelation>
+    <DeleteAction>Restricted</DeleteAction>
+  </AxTableDeleteAction>
+</DeleteActions>
+```
+
+**Vollständiger R-Code:**
+
+```r
+#' Extrahiert alle Delete Actions eines <AxTable>-Knotens
+extract_delete_actions <- function(root, table_nm) {
+  da_nodes <- xml_find_all(root, "DeleteActions/AxTableDeleteAction")
+
+  map_dfr(da_nodes, function(dan) {
+    tibble(
+      TableName             = table_nm,
+      DeleteActionName      = xml_text_safe(dan, "Name"),
+      RelatedTable          = xml_text_safe(dan, "RelatedTable"),
+      DeleteActionRelation  = xml_text_safe(dan, "DeleteActionRelation"),
+      DeleteAction          = xml_text_safe(dan, "DeleteAction", "Restricted")
+    )
+  })
+}
+
+export_delete_actions <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxTable", cfg$models)
+
+  delete_actions_df <- map_dfr(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(tibble())
+    table_nm <- xml_text_safe(root, "Name")
+    extract_delete_actions(root, table_nm)
+  })
+
+  write_metadata_csv(delete_actions_df, "DeleteActions.csv", cfg)
+  delete_actions_df
+}
+
+delete_actions_export <- export_delete_actions(cfg)
+```
+
+**Beispiel der erzeugten CSV-Struktur:**
+
+| TableName | DeleteActionName | RelatedTable | DeleteAction |
+|-----------|--------------------|--------------|---------------|
+| CustTable | DelCustTrans | CustTrans | Restricted |
+
+### 6.11 Kombinierter Single-Pass-Export (Performance-Optimierung)
+
+**Fachliche Beschreibung:** Die Funktionen `export_fields()`, `export_indexes()`, `export_relations()`, `export_field_groups()` und `export_delete_actions()` lesen jeweils **dieselben** `AxTable`-XML-Dateien erneut ein. Bei großen Umgebungen (mehrere Tausend Tabellen) summiert sich dieser wiederholte XML-Parse-Aufwand spürbar. Die nachfolgende Funktion parst jede `AxTable`-Datei **genau einmal** und leitet daraus alle sechs tabellenbezogenen Exporte gleichzeitig ab — unter Wiederverwendung der bereits definierten Extraktoren aus 6.1–6.2 und 6.5, 6.8–6.10.
+
+**Vollständiger R-Code:**
+
+```r
+export_all_table_metadata <- function(cfg) {
+  files <- list_aot_files(cfg$aot_root, "AxTable", cfg$models)
+
+  parsed <- map(files, function(f) {
+    root <- safe_read_xml(f)
+    if (is.null(root)) return(NULL)  # von map_dfr(parsed, "...") unten automatisch uebersprungen
+    table_nm <- xml_text_safe(root, "Name")
+
+    list(
+      tables         = extract_table_header(root) |> mutate(SourceFile = f),
+      fields         = extract_fields(root, table_nm),
+      indexes        = extract_indexes(root, table_nm),
+      relations      = extract_relations(root, table_nm),
+      field_groups   = extract_field_groups(root, table_nm),
+      delete_actions = extract_delete_actions(root, table_nm)
+    )
+  })
+
+  result <- list(
+    tables         = map_dfr(parsed, "tables"),
+    fields         = map_dfr(parsed, "fields"),
+    indexes        = map_dfr(parsed, "indexes"),
+    relations      = map_dfr(parsed, "relations"),
+    field_groups   = map_dfr(parsed, "field_groups"),
+    delete_actions = map_dfr(parsed, "delete_actions")
+  )
+
+  file_map <- c(
+    tables = "Tables.csv", fields = "Fields.csv", indexes = "Indexes.csv",
+    relations = "Relations.csv", field_groups = "FieldGroups.csv",
+    delete_actions = "DeleteActions.csv"
+  )
+
+  iwalk(result, function(df, nm) write_metadata_csv(df, file_map[[nm]], cfg))
+
+  result
+}
+
+all_table_metadata <- export_all_table_metadata(cfg)
+```
+
+> **Performance-Hinweis:** Bei sehr großer Objektanzahl (> 20.000 `AxTable`-Dateien, wie in einem vollständigen D365FO-Standardsystem inkl. aller Branchenmodelle üblich) kann `purrr::map()` durch `furrr::future_map()` ersetzt werden, nachdem zuvor `future::plan(multisession)` gesetzt wurde. Die übrige Logik bleibt unverändert, da alle Extraktoren zustandslos (pure functions) sind.
+
+### 6.12 Hauptskript (`run_export.R`)
+
+```r
+source("R/00_helpers.R")
+
+tables_export         <- export_tables(cfg)
+fields_export         <- export_fields(cfg)
+edts_export           <- export_edts(cfg)
+enums_export          <- export_enums(cfg)
+relations_export      <- export_relations(cfg)
+views_export          <- export_views(cfg)
+data_entities_export  <- export_data_entities(cfg)
+indexes_export        <- export_indexes(cfg)
+field_groups_export   <- export_field_groups(cfg)
+delete_actions_export <- export_delete_actions(cfg)
+
+message("D365 Metadaten-Dictionary-Export abgeschlossen.")
+```
 
 ---
 
-*Erstellt: 2026-09-02 | D365 Systemadministration*
+## 7. Ergebnis
+
+### 7.1 Erzeugte Dateien
+
+Der Export erzeugt zehn CSV-Dateien gemäß Zielmodell (Kap. 3):
+
+```
+Tables.csv · Fields.csv · EDTs.csv · Enums.csv · Relations.csv
+Views.csv · DataEntities.csv · Indexes.csv · FieldGroups.csv · DeleteActions.csv
+```
+
+### 7.2 Ablage
+
+Die Dateien werden standardmäßig unter `cfg$output_dir` (z. B. `C:/D365_Metadata_Export/Output`) abgelegt. Für den Zugriff durch andere Teams (BI, Architektur, Data-Governance) empfiehlt sich zusätzlich die Ablage auf einem freigegebenen Netzlaufwerk oder — bevorzugt — in einem versionierten Speicherort (z. B. einem Git-Repository oder einem OneLake-/Fabric-Lakehouse-Ordner), sodass jeder Exportlauf nachvollziehbar und vergleichbar bleibt.
+
+### 7.3 Weiterverarbeitung
+
+| Zielsystem | Vorgehen |
+|------------|----------|
+| **SQL Server** | Import per `BULK INSERT`, SSIS-Paket oder `sqlcmd -Q "BULK INSERT ..."`; alternativ direkter Schreibzugriff aus R via `DBI::dbWriteTable()`. |
+| **Microsoft Fabric** | CSV-Dateien in ein OneLake-Lakehouse (Ordner „Files") ablegen und per Dataflow Gen2 oder Notebook (PySpark/`spark.read.csv`) in Delta-Tabellen überführen. |
+| **Power BI** | Direktimport über „Daten abrufen → Text/CSV" oder „Ordner" (bei wiederkehrenden Exporten mit gleichbleibendem Dateinamen); Aufbau eines Sternschemas aus `Tables`, `Fields`, `Relations`. |
+| **Data Catalog** (z. B. Microsoft Purview) | Scan der CSV-Ablage als strukturierte Quelle, oder Anreicherung eines bestehenden technischen Assets je Tabelle/Feld über die Purview-API auf Basis der Exportdaten. |
+
+---
+
+## 8. Weiterentwicklung
+
+### 8.1 Automatische Power-BI-Dokumentation
+
+Generierung eines Power-BI-Vorlagenmodells (`.pbit`), das `Tables.csv`, `Fields.csv` und `Relations.csv` automatisiert als Datenmodell inkl. vordefinierter Beziehungen lädt — als Ausgangspunkt für neue Reports auf D365-Daten.
+
+### 8.2 Data-Dictionary-Generierung
+
+Zusammenführung aller zehn CSV-Dateien zu einem durchsuchbaren HTML-Datenkatalog (z. B. mittels `pkgdown`/`bookdown` oder Export nach Confluence), inklusive Verlinkung zwischen Tabellen, Feldern, Relations und Enums.
+
+### 8.3 Excel-Workbook-Export
+
+Zusammenführung aller Exporte in eine einzige Arbeitsmappe mit einem Tabellenblatt je Metadatentyp, formatiert und mit Auto-Filter — analog zum bestehenden Muster in `Entity_Comparison_Export.R` (`openxlsx`-basiert, inkl. bedingter Formatierung und Verlinkung).
+
+### 8.4 Entity-Relationship-Diagramme
+
+Automatisierte Generierung von ER-Diagrammen aus `Relations.csv` (z. B. mit `DiagrammeR` oder Mermaid-Syntax), um Tabellenabhängigkeiten visuell für Architektur- und Migrationsentscheidungen aufzubereiten.
+
+### 8.5 Datenmigrations-Mapping
+
+Verknüpfung des Dictionarys mit Quellsystem-Mappingtabellen (Quellfeld → Zielfeld je Tabelle), um Migrations-Mapping-Dokumente teilautomatisiert aus `Fields.csv` und `Indexes.csv` abzuleiten.
+
+### 8.6 KI-/RAG-Wissensdatenbank
+
+Aufbau einer Retrieval-Augmented-Generation-Wissensbasis auf Basis der zehn CSV-Dateien (Chunking je Tabelle/Feld, Embeddings, Vektor-Index), um Fachfragen zum D365-Datenmodell ("Welche Tabelle enthält Feld X?", "Was passiert beim Löschen von Y?") über ein Sprachmodell direkt beantworten zu können.
+
+---
+
+*Erstellt: 2026-09-14 | D365 Systemadministration / Architektur — Metadaten-Dictionary-Export*
