@@ -26,16 +26,16 @@ Dieses Dokument beschreibt eine **RStudio-basierte Alternative** zu diesem ETL-S
 | Lobster-Schritt (Ist) | RStudio-Äquivalent (dieses Skript) |
 |---|---|
 | Trigger: Ablage `*.xlsx` im Quellverzeichnis | Geplanter Task (z.B. Windows Task Scheduler) oder manueller Skriptstart |
-| Technische Prüfung (Format, Datentypen) | *(noch nicht implementiert, siehe Abschnitt 7)* |
-| Anreicherung aus D365 (`Customers V3`) | Abschnitt 4: Datei-Export (Option A) mit Fallback auf Live-API (Option B) |
-| Fachliches Mapping (feste Werte, Bedingungen) | Abschnitt 5 |
-| Datei zurückschreiben (Zeitstempel-Präfix) | Abschnitt 6 |
-| Verschieben nach `./done` oder `./error` | Abschnitt 7 |
-| Bearbeitungsstand per Mail | Abschnitt 8 |
+| Technische Prüfung (Format, Datentypen) | Abschnitt 4 |
+| Anreicherung aus D365 (`Customers V3`) | Abschnitt 6: Datei-Export (Option A) mit Fallback auf Live-API (Option B) |
+| Fachliches Mapping (feste Werte, Bedingungen) | Abschnitt 7 |
+| Datei zurückschreiben (Zeitstempel-Präfix) | Abschnitt 9 |
+| Verschieben nach `./done` oder `./error` | Abschnitt 9 |
+| Bearbeitungsstand per Mail | Abschnitt 10 |
 
 ---
 
-## 3. Konfiguration und Vorlage einlesen
+## 3. Konfiguration
 
 ```{r setup, message=FALSE}
 library(readxl)
@@ -44,15 +44,99 @@ library(rlang)
 library(writexl)
 library(httr2)
 library(fs)
+library(openxlsx)
 ```
 
 ```{r pfade}
 path          <- "C:/Users/ckam_admin/Documents/RProjects/D365_Admin/Data/IT-76900 Bewohner anlegen/"
 file_vorlage  <- "IT-76900 10Sep26  Bewohner.xlsx"
 file_Parent   <- "Customers V3.xlsx"
+
+# Cache fuer die OData<->AOT-Namens-Mapping-Tabelle (Option B, siehe Abschnitt 6.3)
+cache_namens_mapping <- file.path(path, "match_Names.RData")
 ```
 
-Spaltennamen der Fachbereichs-Vorlage werden direkt auf die Zielfeldnamen der Entität umbenannt. `CUSTOMERACCOUNT` (aus `Debitorennummer`) wird danach verworfen — der Fachbereich liefert für den *neuen* Debitor keinen eigenen `CUSTOMERACCOUNT`; dieses Feld muss in der finalen Datei leer bleiben (siehe Abschnitt 6).
+---
+
+## 4. Technische Validierung der Quelldatei
+
+Setzt die Bedingungen aus der Fachspezifikation um, die die IT vor der Verarbeitung prüfen muss: genau ein Tab, Spaltenköpfe in Zeile 3 exakt in der vereinbarten Reihenfolge, keine verbundenen Zellen, sowie Datentypen und leere Zeilen bei den eigentlichen Daten (ab Zeile 4). Schlägt eine Prüfung fehl, bricht das Skript mit einer Fehlermeldung ab, sodass die Datei nach `./error` verschoben werden kann (siehe Abschnitt 9), statt fehlerhafte Daten stillschweigend zu verarbeiten.
+
+### 4.1 Struktur der Datei (Tab-Anzahl, Spaltenköpfe, verbundene Zellen)
+
+```{r validiere-struktur}
+validiere_vorlage <- function(pfad_datei, erwartete_spalten) {
+  fehler <- character(0)
+
+  # Genau ein Tab
+  sheets <- readxl::excel_sheets(pfad_datei)
+  if (length(sheets) != 1) {
+    fehler <- c(fehler, sprintf(
+      "Erwartet genau ein Tab, gefunden: %d (%s)",
+      length(sheets), paste(sheets, collapse = ", ")
+    ))
+  }
+
+  # Spaltenköpfe in Zeile 3 muessen exakt (Name + Reihenfolge) uebereinstimmen;
+  # weitere Spalten nach der letzten erwarteten Spalte sind laut Spezifikation erlaubt und werden ignoriert
+  rohdaten <- readxl::read_excel(pfad_datei, sheet = sheets[1], col_names = FALSE, n_max = 3)
+  header_zeile3 <- as.character(unlist(rohdaten[3, seq_along(erwartete_spalten)]))
+  if (!identical(header_zeile3, erwartete_spalten)) {
+    fehler <- c(fehler, sprintf(
+      "Spaltenkoepfe in Zeile 3 weichen ab.\nErwartet: %s\nGefunden:  %s",
+      paste(erwartete_spalten, collapse = " | "),
+      paste(header_zeile3, collapse = " | ")
+    ))
+  }
+
+  # Keine verbundenen Zellen (weder in Spalten noch in Zeilen)
+  wb <- openxlsx::loadWorkbook(pfad_datei)
+  merged <- openxlsx::getMergedCells(wb, sheet = sheets[1])
+  if (length(merged) > 0) {
+    fehler <- c(fehler, sprintf("Verbundene Zellen gefunden: %s", paste(merged, collapse = ", ")))
+  }
+
+  if (length(fehler) > 0) {
+    stop(paste(fehler, collapse = "\n"))
+  }
+  invisible(TRUE)
+}
+```
+
+### 4.2 Datentypen und leere Zeilen (ab Zeile 4)
+
+`Übergeordneter Kunde` und `Debitorennummer` müssen numerisch sein (analog zur Doku-Vorgabe "Datentypen werden nicht eingehalten"). Eine Zeile, die in **keiner** Spalte Daten enthält, wird ignoriert (gefiltert) statt den Import abzubrechen — die Spezifikation lässt beides zu; falls stattdessen ein Abbruch gewünscht ist, siehe Abschnitt 11.
+
+```{r pruefe-datentypen}
+pruefe_datentypen <- function(df) {
+  ist_leer <- apply(df, 1, function(zeile) all(is.na(zeile) | trimws(as.character(zeile)) == ""))
+  df <- df[!ist_leer, ]
+
+  fehler <- character(0)
+  numerische_spalten <- c("Übergeordneter Kunde", "Debitorennummer")
+  for (spalte in numerische_spalten) {
+    werte <- trimws(as.character(df[[spalte]]))
+    ungueltig <- werte[!grepl("^[0-9]+$", werte)]
+    if (length(ungueltig) > 0) {
+      fehler <- c(fehler, sprintf(
+        "Spalte '%s' enthaelt nicht-numerische Werte: %s",
+        spalte, paste(unique(ungueltig), collapse = ", ")
+      ))
+    }
+  }
+
+  if (length(fehler) > 0) {
+    stop(paste(fehler, collapse = "\n"))
+  }
+  df
+}
+```
+
+---
+
+## 5. Vorlage einlesen
+
+Spaltennamen der Fachbereichs-Vorlage werden nach erfolgreicher Validierung direkt auf die Zielfeldnamen der Entität umbenannt. `CUSTOMERACCOUNT` (aus `Debitorennummer`) wird danach verworfen — der Fachbereich liefert für den *neuen* Debitor keinen eigenen `CUSTOMERACCOUNT`; dieses Feld muss in der finalen Datei leer bleiben (siehe Abschnitt 8).
 
 ```{r vorlage-einlesen}
 old <- c("Übergeordneter Kunde", "Debitorennummer", "Nachname", "Vorname", "Anrede", "Zahlungsmethode")
@@ -60,18 +144,21 @@ old <- c("Übergeordneter Kunde", "Debitorennummer", "Nachname", "Vorname", "Anr
 new <- c("WIBUPARENTACCOUNT", "CUSTOMERACCOUNT", "PERSONLASTNAME", "PERSONFIRSTNAME",
          "PERSONLASTNAMEPREFIX", "PAYMENTMETHOD")
 
+validiere_vorlage(file.path(path, file_vorlage), old)
+
 Vorlage <- readxl::read_excel(path = file.path(path, file_vorlage), skip = 2) |>
+  pruefe_datentypen() |>
   rlang::set_names(new) |>
   dplyr::select(-CUSTOMERACCOUNT)
 ```
 
 ---
 
-## 4. Parent-Kundendaten aus D365FO (`Customers V3`)
+## 6. Parent-Kundendaten aus D365FO (`Customers V3`)
 
 Zwei Beschaffungswege sind vorgesehen: zuerst der bestehende Datei-Export (**Option A**), bei Fehler automatischer Rückgriff auf die **Option B** (direkte D365FO-API).
 
-> **Hinweis zu `PAYMENTMETHOD`:** Laut Mapping-Tabelle wird der Zielwert für `PAYMENTMETHOD` aus der Quelle (`Zahlungsmethode`, mit Fallback-Regel) gebildet, nicht aus D365. Das Feld wurde deshalb hier bewusst aus der D365-Feldliste entfernt — sonst würde der Join in Abschnitt 5 wegen des doppelten Spaltennamens `PAYMENTMETHOD` (einmal aus der Vorlage, einmal aus D365) zu `.x`/`.y`-Spalten führen. Falls `PAYMENTMETHOD` aus D365 doch anderweitig gebraucht wird, bitte Rückmeldung — dann muss die Spalte vor dem Join umbenannt werden.
+> **Hinweis zu `PAYMENTMETHOD`:** Laut Mapping-Tabelle wird der Zielwert für `PAYMENTMETHOD` aus der Quelle (`Zahlungsmethode`, mit Fallback-Regel) gebildet, nicht aus D365 — siehe Abschnitt 7.2, wo das Feld befüllt wird und **nicht** leer bleibt. Es wurde deshalb hier bewusst aus der D365-Feldliste entfernt — sonst würde der Join in Abschnitt 7.1 wegen des doppelten Spaltennamens `PAYMENTMETHOD` (einmal aus der Vorlage, einmal aus D365) zu `.x`/`.y`-Spalten führen. Falls `PAYMENTMETHOD` aus D365 doch anderweitig gebraucht wird, bitte Rückmeldung — dann muss die Spalte vor dem Join umbenannt werden.
 
 ```{r feldliste-parent}
 names_parent <- c('CUSTOMERACCOUNT', 'ADDRESSCITY', 'ADDRESSCOUNTRYREGIONID',
@@ -84,7 +171,7 @@ names_parent <- c('CUSTOMERACCOUNT', 'ADDRESSCITY', 'ADDRESSCOUNTRYREGIONID',
   'WIBUPARENTACCOUNT', 'WIBUPEERGROUPID')
 ```
 
-### 4.1 Freshness-Regel (Lobster-Vorgabe: Daten nicht älter als 1 Tag)
+### 6.1 Freshness-Regel (Lobster-Vorgabe: Daten nicht älter als 1 Tag)
 
 ```{r freshness-check}
 ist_aktuell <- function(datei) {
@@ -92,7 +179,7 @@ ist_aktuell <- function(datei) {
 }
 ```
 
-### 4.2 Option A – Datei-Export
+### 6.2 Option A – Datei-Export
 
 ```{r option-a}
 lade_parent_aus_datei <- function(path, file_Parent, felder) {
@@ -105,11 +192,11 @@ lade_parent_aus_datei <- function(path, file_Parent, felder) {
 }
 ```
 
-### 4.3 Option B – Direkte D365FO-API (OAuth2 Client-Credentials-Flow via `httr2`)
+### 6.3 Option B – Direkte D365FO-API (OAuth2 Client-Credentials-Flow via `httr2`)
 
-**Skizze/Entwurf** — Credentials (`tenant_id`, `client_id`, `client_secret`, `env_url`) dürfen **nicht** im Skript hardcodiert werden, sondern sollten über Umgebungsvariablen (`.Renviron`) oder ein Secrets-Management (z.B. `keyring`) eingelesen werden. In diesem Repo existiert noch keine etablierte D365FO-API-Anbindung, an der sich dies orientieren könnte — bei Bedarf hier abstimmen.
+Credentials (`tenant_id`, `client_id`, `client_secret`, `env_url`) dürfen **nicht** im Skript hardcodiert werden, sondern sollten über Umgebungsvariablen (`.Renviron`) oder ein Secrets-Management (z.B. `keyring`) eingelesen werden. In diesem Repo existiert noch keine etablierte D365FO-API-Anbindung, an der sich dies orientieren könnte — bei Bedarf hier abstimmen.
 
-```{r option-b}
+```{r option-b-token}
 get_d365_token <- function(tenant_id, client_id, client_secret, resource_url) {
   httr2::request(sprintf("https://login.microsoftonline.com/%s/oauth2/token", tenant_id)) |>
     httr2::req_body_form(
@@ -122,18 +209,74 @@ get_d365_token <- function(tenant_id, client_id, client_secret, resource_url) {
     httr2::resp_body_json() |>
     (\(x) x$access_token)()
 }
+```
 
-lade_parent_aus_api <- function(env_url, token, felder) {
-  httr2::request(sprintf("%s/data/CustomersV3", env_url)) |>
+**Namens-Mapping OData (CamelCase) ↔ AOT (GROSSBUCHSTABEN):** Die OData-Entität liefert ihre Felder in CamelCase (z.B. `CustomerAccount`), während `names_parent` (und die Mapping-Tabelle der Fachspezifikation) die AOT-Schreibweise in Großbuchstaben verwendet (`CUSTOMERACCOUNT`). Da `$select` case-sensitiv ist, muss vor jeder Abfrage übersetzt werden. Dazu wird einmalig per `$top=1` (ohne `$select`, damit alle Feldnamen zurückkommen) eine Mapping-Tabelle ermittelt und als `.RData`-Datei gecacht, damit dieser zusätzliche Aufruf nicht bei jedem Lauf wiederholt werden muss.
+
+`company` ist als Parameter vorgesehen (Default `NULL` = alle Mandanten, `cross-company=true` bleibt dabei immer gesetzt); zum gezielten Testen gegen einen einzelnen Mandanten kann z.B. `company = "0800"` übergeben werden.
+
+```{r option-b-mapping}
+hole_odata_feldnamen <- function(env_url, token, company = NULL) {
+  req <- httr2::request(sprintf("%s/data/CustomersV3?cross-company=true", env_url)) |>
     httr2::req_auth_bearer_token(token) |>
-    httr2::req_url_query(`$select` = paste(felder, collapse = ",")) |>
+    httr2::req_url_query(`$top` = 1)
+  if (!is.null(company)) {
+    req <- httr2::req_url_query(req, company = company)
+  }
+  req |>
     httr2::req_perform() |>
     httr2::resp_body_json(simplifyVector = TRUE) |>
-    (\(x) x$value)()
+    (\(x) x$value)() |>
+    names()
+}
+
+erstelle_namens_mapping <- function(env_url, token, company = NULL) {
+  odata_namen <- hole_odata_feldnamen(env_url, token, company)
+  data.frame(OdataName = odata_namen, AOTName = toupper(odata_namen))
+}
+
+lade_namens_mapping <- function(env_url, token, cache_datei, company = NULL) {
+  if (file.exists(cache_datei)) {
+    load(cache_datei, envir = environment())
+  } else {
+    match_Names <- erstelle_namens_mapping(env_url, token, company)
+    save(match_Names, file = cache_datei)
+  }
+  match_Names
+}
+
+uebersetze_zu_odata <- function(felder_aot, mapping) {
+  treffer <- mapping$OdataName[match(felder_aot, mapping$AOTName)]
+  fehlend <- felder_aot[is.na(treffer)]
+  if (length(fehlend) > 0) {
+    warning("Keine OData-Entsprechung gefunden fuer: ", paste(fehlend, collapse = ", "))
+  }
+  treffer[!is.na(treffer)]
 }
 ```
 
-### 4.4 Fallback-Logik (A → B)
+```{r option-b-abfrage}
+lade_parent_aus_api <- function(env_url, token, felder, cache_datei, company = NULL) {
+  match_Names  <- lade_namens_mapping(env_url, token, cache_datei, company)
+  felder_odata <- uebersetze_zu_odata(felder, match_Names)
+
+  req <- httr2::request(sprintf("%s/data/CustomersV3?cross-company=true", env_url)) |>
+    httr2::req_auth_bearer_token(token) |>
+    httr2::req_url_query(`$select` = paste(felder_odata, collapse = ","))
+  if (!is.null(company)) {
+    req <- httr2::req_url_query(req, company = company)
+  }
+
+  ergebnis <- req |>
+    httr2::req_perform() |>
+    httr2::resp_body_json(simplifyVector = TRUE) |>
+    (\(x) x$value)()
+
+  rlang::set_names(ergebnis, match_Names$AOTName[match(names(ergebnis), match_Names$OdataName)])
+}
+```
+
+### 6.4 Fallback-Logik (A → B)
 
 ```{r fallback}
 parentCust <- tryCatch(
@@ -148,16 +291,17 @@ parentCust <- tryCatch(
       client_secret = Sys.getenv("D365_CLIENT_SECRET"),
       resource_url  = Sys.getenv("D365_ENV_URL")
     )
-    lade_parent_aus_api(Sys.getenv("D365_ENV_URL"), token, names_parent)
+    # company = NULL -> Default: Daten aus allen Mandanten (cross-company=true)
+    lade_parent_aus_api(Sys.getenv("D365_ENV_URL"), token, names_parent, cache_namens_mapping)
   }
 )
 ```
 
 ---
 
-## 5. Anreicherung und fachliches Mapping
+## 7. Anreicherung und fachliches Mapping
 
-### 5.1 Join
+### 7.1 Join
 
 `CUSTOMERACCOUNT` dient hier ausschließlich als Join-Schlüssel gegen `WIBUPARENTACCOUNT` der Vorlage — dplyr legt dabei **keine** zusätzliche `CUSTOMERACCOUNT`-Spalte im Ergebnis an, `WIBUPARENTACCOUNT` bleibt mit den Werten aus der Vorlage erhalten.
 
@@ -166,9 +310,9 @@ custV3 <- Vorlage |>
   dplyr::left_join(parentCust, by = c("WIBUPARENTACCOUNT" = "CUSTOMERACCOUNT"))
 ```
 
-### 5.2 Feld-Mapping (feste Werte, Bedingungen)
+### 7.2 Feld-Mapping (feste Werte, Bedingungen)
 
-Umsetzung der Mapping-Tabelle aus der Fachspezifikation:
+Umsetzung der Mapping-Tabelle aus der Fachspezifikation. `PAYMENTMETHOD` wird hier **immer** befüllt: entweder mit dem Wert aus der Vorlage (`Zahlungsmethode`) oder, falls dieser leer ist, mit dem Standardwert `"SEPA ÜW"`.
 
 ```{r mapping}
 custV3 <- custV3 |>
@@ -192,11 +336,11 @@ custV3 <- custV3 |>
   )
 ```
 
-Alle übrigen Zielfelder (`{d365.Feldname}` in der Mapping-Tabelle) sind bereits durch den Join in Abschnitt 5.1 befüllt (z.B. `ADDRESSCITY`, `ADDRESSSTREET`, `PAYMENTTERMS`, `WIBUADDRESSNAME2` usw.).
+Alle übrigen Zielfelder (`{d365.Feldname}` in der Mapping-Tabelle) sind bereits durch den Join in Abschnitt 7.1 befüllt (z.B. `ADDRESSCITY`, `ADDRESSSTREET`, `PAYMENTTERMS`, `WIBUADDRESSNAME2` usw.).
 
 ---
 
-## 6. Zielschema erzwingen (Spaltenreihenfolge, leere `CUSTOMERACCOUNT`-Spalte)
+## 8. Zielschema erzwingen (Spaltenreihenfolge, leere `CUSTOMERACCOUNT`-Spalte)
 
 `CUSTOMERACCOUNT` muss in der finalen Datei als **leere** Spalte vorhanden sein (D365 vergibt die Debitorennummer beim Import selbst). Zusätzlich wird die Spaltenreihenfolge exakt auf das Zielschema der Mapping-Tabelle gebracht.
 
@@ -219,7 +363,7 @@ custV3_final <- custV3 |>
 
 ---
 
-## 7. Datei schreiben und verschieben
+## 9. Datei schreiben und verschieben
 
 ```{r schreiben-verschieben}
 zeitstempel   <- format(Sys.time(), "%Y%m%d_%H%M%S")
@@ -241,11 +385,11 @@ if (!verarbeitung_erfolgreich) {
 }
 ```
 
-> **Offen:** Technische Validierung der Quelldatei (genau ein Tab, Header in Zeile 3, keine verbundenen Zellen, Datentypen je Spalte) ist hier noch **nicht** implementiert — aktuell wird nur der Schreib-/Anreicherungs-Fehler abgefangen, nicht die in der Fachspezifikation genannten Format-Validierungen.
+> **Hinweis:** Schlägt bereits die Validierung aus Abschnitt 4 fehl (z.B. falsche Spaltenköpfe, verbundene Zellen, ungültige Datentypen), bricht das Skript dort mit `stop()` ab, bevor dieser Abschnitt erreicht wird. Für ein vollständiges "nach `./error` verschieben" müsste dieser Abbruch noch mit einem äußeren `tryCatch()` um die Abschnitte 4–9 verbunden werden (aktuell fängt der `tryCatch` hier nur Schreibfehler ab) — siehe Abschnitt 11.
 
 ---
 
-## 8. Bearbeitungsstand per Mail
+## 10. Bearbeitungsstand per Mail
 
 **Noch zu klären:** Welches Mail-Paket/welcher Versandweg soll genutzt werden (z.B. `blastula`, `emayili`, `Microsoft365R`/Outlook)? Platzhalter:
 
@@ -256,13 +400,15 @@ if (!verarbeitung_erfolgreich) {
 
 ---
 
-## 9. Offene Punkte
+## 11. Offene Punkte
 
 | Punkt | Status |
 |---|---|
 | Credentials-Handling für Option B (`.Renviron`/`keyring`) | offen — konkrete Werte für `D365_TENANT_ID`, `D365_CLIENT_ID`, `D365_CLIENT_SECRET`, `D365_ENV_URL` fehlen noch |
-| `PAYMENTMETHOD` aus D365-Feldliste entfernt (Begründung siehe Abschnitt 4) | zur Bestätigung offen |
-| Technische Validierung der Quelldatei (ein Tab, Header, Datentypen, verbundene Zellen) | noch nicht implementiert |
+| `match_Names`-Cache (`match_Names.RData`, Abschnitt 6.3) wird nur einmalig ermittelt | bei Schemaänderungen der `CustomersV3`-Entität in D365 (neue/umbenannte Felder) muss die Cache-Datei manuell gelöscht werden, damit sie neu aufgebaut wird |
+| `PAYMENTMETHOD` aus D365-Feldliste entfernt (Begründung siehe Abschnitt 6) | zur Bestätigung offen — Feld selbst bleibt befüllt, siehe Abschnitt 7.2 |
+| Umgang mit leeren Zeilen: ignorieren vs. Abbruch (Abschnitt 4.2) | aktuell: ignorieren (Zeile wird gefiltert) — Spezifikation lässt auch Abbruch zu, bitte bestätigen |
+| Validierungs-Abbruch (Abschnitt 4) noch nicht mit `./error`-Verschiebung (Abschnitt 9) verbunden | noch nicht implementiert, siehe Hinweis in Abschnitt 9 |
 | Mail-Versand-Mechanismus | noch nicht festgelegt |
 | Trigger-Mechanismus (Task Scheduler vs. manueller Start) | noch nicht festgelegt |
 | Freshness-Kriterium: Dateiänderungsdatum vs. Datumsfeld im Export | Dateiänderungsdatum als Annahme verwendet, ggf. anzupassen |
