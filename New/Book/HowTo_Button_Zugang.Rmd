@@ -1,0 +1,366 @@
+# HowTo: D365FO Button-Zugang für Kollegen einrichten
+
+## Ziel
+
+Ein Benutzer hat Zugang zu einem Button in D365FO und möchte diesen Zugang
+an Kollegen weitergeben. Dieses HowTo beschreibt:
+
+1. Welche Sicherheitsobjekte (Rolle / Duty / Privilege) den Zugang gewähren
+2. Welche Lizenzen die beteiligten Rollen erfordern
+3. Wer bereits über die zugehörigen Duties / Privileges verfügt
+4. Ob die Rollenzuweisung die Lizenz der Kollegen verändert
+5. Wie die Entscheidung getroffen und dokumentiert wird
+
+---
+
+## Voraussetzungen
+
+```{r setup}
+library(dplyr)
+
+devtools::load_all("C:/Users/cedric/Documents/RProjects/D365Security")
+```
+
+---
+
+## Parameter
+
+```{r parameter}
+# Datenbankverbindung
+cnn <- get_connection(
+  "PRJ",
+  "C:/Users/CKAM/Documents/RProjects/D365Security/db_credentials.xlsx"
+)
+
+# AOT-Name des Buttons / Menüeintrags (in D365FO unter AOT > Menu Items)
+button_name <- "VendEditInvoiceArrangeDropDialog"
+
+# Referenzbenutzer: hat aktuell Zugang zu diesem Button
+referenz_benutzer <- "wibule01"
+
+# Kollegen, die den gleichen Zugang erhalten sollen
+kollegen <- c("wibule02", "wibule03")
+
+# Neue Rolle, die zugewiesen werden soll
+# → Anfangs leer; wird in Phase 3 aus der Hierarchie bestimmt
+neue_rolle <- ""
+```
+
+---
+
+## Phase 1 – Sicherheits-Hierarchie ermitteln
+
+Welche Rollen, Duties und Privileges gewähren Zugang zu diesem Button?
+
+```{r hierarchie, eval=FALSE}
+hierarchie <- get_sql_security_hierarchy(
+  con       = cnn,
+  resources = button_name
+)
+
+hierarchie
+```
+
+**Spalten im Ergebnis:**
+
+| Spalte | Bedeutung |
+|---|---|
+| `ROLEIDENTIFIER` | AOT-Name der Rolle |
+| `ROLENAME` | Anzeigename der Rolle |
+| `SUBROLEIDENTIFIER` | AOT-Name einer eingebetteten Unterrolle |
+| `SUBROLENAME` | Anzeigename der Unterrolle |
+| `DUTYIDENTIFIER` | Duty, über die der Zugang kommt |
+| `PRIVILEGEIDENTIFIER` | Privilege, das den Button freischaltet |
+| `RESOURCE_` | AOT-Name des Buttons |
+
+### Hierarchie aufschlüsseln
+
+```{r hierarchie-slicing, eval=FALSE}
+zugang <- sec_get_direct_access_roles(hierarchie)
+
+# Rollen/Subrollen mit direktem Zugang — Kandidaten für Rollenzuweisung
+zugang$direkt
+
+# Rollen, die den Zugang nur über eine Subrolle erben — zur Information
+zugang$via_subrole
+```
+
+**`zugang$direkt`** — eine Zeile pro Rolle-Duty-Privilege-Kombination:
+
+| Spalte | Bedeutung |
+|---|---|
+| `ROLEIDENTIFIER` | Direkte Trägerrolle (top-level oder Subrolle) |
+| `ROLENAME` | Anzeigename |
+| `DUTYIDENTIFIER` | Duty im Pfad (`NA` bei direkter Privilege-Zuweisung) |
+| `PRIVILEGEIDENTIFIER` | Privilege das den Button freischaltet |
+| `RESOURCE_` | AOT-Name des Buttons |
+
+**`zugang$via_subrole`** — zeigt welche übergeordneten Rollen erben:
+
+| Spalte | Bedeutung |
+|---|---|
+| `ROLEIDENTIFIER` | Übergeordnete Rolle (erbt nur indirekt) |
+| `SUBROLEIDENTIFIER` | Subrolle, die den Zugang direkt trägt |
+| `DUTYIDENTIFIER` / `PRIVILEGEIDENTIFIER` / `RESOURCE_` | Pfad |
+
+```{r hierarchie-vektoren, eval=FALSE}
+# Hilfsvektoren für nachfolgende Schritte
+roles      <- zugang$direkt |> dplyr::distinct(ROLEIDENTIFIER)    |> dplyr::pull(ROLEIDENTIFIER)
+duties     <- zugang$direkt |> dplyr::filter(!is.na(DUTYIDENTIFIER)) |> dplyr::pull(DUTYIDENTIFIER) |> unique()
+privileges <- zugang$direkt |> dplyr::distinct(PRIVILEGEIDENTIFIER) |> dplyr::pull(PRIVILEGEIDENTIFIER)
+```
+
+---
+
+## Phase 1b – Lizenzanforderungen der ausgewählten Rolle
+
+Welche Lizenz erfordert die Rolle, die zugewiesen werden soll?
+
+> **Hinweis:** `get_role_license_requirements()` verarbeitet eine Rolle pro Aufruf.
+> Für einen schnellen Überblick über alle Rollen aus der Hierarchie
+> `get_role_license_assignments()` verwenden.
+
+```{r rollen-lizenzen, eval=FALSE}
+# Eine konkrete Rolle analysieren (2-Stufen-Algorithmus analog Microsoft-UI)
+rr <- get_role_license_requirements(
+  con              = cnn,
+  role_identifiers = "_WIBU_DEBITOREN_RECHNUNGSERFASSUNG"
+)
+
+rr
+```
+
+**Spalten im Ergebnis:**
+
+| Spalte | Bedeutung |
+|---|---|
+| `ROLEIDENTIFIER` | AOT-Name der Rolle |
+| `SECURITYROLENAME` | Anzeigename |
+| `SKUNAME` | Benötigte Lizenz |
+| `PRIORITY` | Lizenz-Priorität (niedrig = günstiger) |
+| `privilege_count` | Anzahl abgedeckter Privileges |
+| `algorithm_step` | `"single_license"` oder `"collapse"` |
+
+Für alle Rollen aus der Hierarchie auf einmal `get_role_license_assignments()` verwenden:
+
+```{r rollen-assignments, eval=FALSE}
+# Direktzuordnung Rolle → SKU für alle Rollen aus der Hierarchie
+get_role_license_assignments(cnn, role_identifiers = roles)
+```
+
+**Unterschied der beiden Funktionen:**
+
+| Funktion | Eingabe | Methode |
+|---|---|---|
+| `get_role_license_requirements()` | Eine Rolle | 2-Stufen-Algorithmus (analog Microsoft-UI) |
+| `get_role_license_assignments()` | Eine oder mehrere Rollen | Direkter Tabellen-Lookup |
+
+---
+
+## Phase 1c – Benutzer mit diesen Duties oder Privileges
+
+Wer hat bereits über eine Duty oder ein Privilege Zugang zu diesem Button?
+
+```{r benutzer-duties, eval=FALSE}
+# Alle Benutzer, die mindestens eine der Duties aus der Hierarchie haben
+benutzer_mit_duty <- get_user_duties(
+  con              = cnn,
+  duty_identifiers = duties
+)
+
+benutzer_mit_duty
+```
+
+```{r benutzer-privileges, eval=FALSE}
+# Alle Benutzer, die mindestens ein Privilege aus der Hierarchie haben
+benutzer_mit_privilege <- get_user_privileges(
+  con                   = cnn,
+  privilege_identifiers = privileges
+)
+
+benutzer_mit_privilege
+```
+
+```{r referenz-check, eval=FALSE}
+# Zur Kontrolle: Hat der Referenzbenutzer die erwarteten Duties?
+get_user_duties(
+  con              = cnn,
+  user_ids         = referenz_benutzer,
+  duty_identifiers = duties
+)
+
+# Und die Privileges?
+get_user_privileges(
+  con                   = cnn,
+  user_ids              = referenz_benutzer,
+  privilege_identifiers = privileges
+)
+```
+
+---
+
+## Phase 2 – Lizenzklasse des Buttons prüfen
+
+Was kostet dieser Button lizenzrechtlich — unabhängig von einer konkreten Rolle?
+
+```{r lizenz-objekt, eval=FALSE}
+lizenz_klasse <- get_object_license_class(
+  connection = cnn,
+  aot_names  = button_name
+)
+
+lizenz_klasse
+```
+
+**Interpretation:**
+
+| ACCESSLEVEL | SKUNAME | license_delta | Bedeutung |
+|---|---|---|---|
+| 1 (Read) | Team Members | none | Lesen reicht mit günstigster Lizenz |
+| 2 (Write) | Finance | upgrade | Schreiben erfordert Finance-Lizenz |
+
+### Überblick: Lizenz-Funktionen
+
+| Funktion | Perspektive | Quelle |
+|---|---|---|
+| `get_license_requirements()` | SKU → Privileges (welche Privileges deckt SKU X ab?) | `LICENSINGPRIVILEGEREQUIREMENTSDETAILEDVIEW` (DETAILED) |
+| `get_privilege_license_map()` | Privilege → SKUs (welche Lizenzen decken Privilege X ab?) | `LICENSINGPRIVILEGEREQUIREMENTSSUMMARYVIEW` (SUMMARY) |
+| `get_role_license_requirements()` | Rolle → Lizenzen (was braucht diese Rolle?) | Beide Views + 2-Stufen-Algorithmus |
+
+---
+
+## Phase 3 – Rolle auswählen
+
+Aus `zugang$direkt` die geeignete Rolle auswählen. Nur diese Rollen sind
+Kandidaten für eine Zuweisung — übergeordnete Rollen aus `zugang$via_subrole`
+gewähren den Zugang lediglich durch Vererbung über eine Subrolle.
+
+```{r rolle-waehlen, eval=FALSE}
+# Kandidaten: Rollen/Subrollen mit direktem Zugang
+zugang$direkt |> dplyr::distinct(ROLEIDENTIFIER, ROLENAME)
+
+# Lizenzüberblick aller Kandidaten (kompakt)
+get_role_license_assignments_compact(cnn, role_identifiers = roles)
+```
+
+In der Regel die engste Rolle wählen (nicht zu weit gefasst).
+
+```{r rolle-festlegen, eval=FALSE}
+# Entscheidung: welche Rolle wird zugewiesen?
+neue_rolle <- "_WIBU_DEBITOREN_RECHNUNGSERFASSUNG"
+```
+
+---
+
+## Phase 4 – Lizenz-Impact der Kollegen prüfen
+
+Bevor die Rolle zugewiesen wird: ändert sich die Lizenz der Kollegen?
+
+```{r lizenz-impact, eval=FALSE}
+impact <- sec_check_license_impact(
+  connection          = cnn,
+  user_ids            = kollegen,
+  new_role_identifier = neue_rolle
+)
+
+impact
+```
+
+**Interpretation `license_change`:**
+
+| Wert | Bedeutung |
+|---|---|
+| `none` | Keine Lizenzänderung — Zuweisung kostenneutral |
+| `upgrade` | Hauptlizenz steigt (z.B. Team Members → Finance) |
+| `additional` | Neuer Lizenztyp kommt hinzu, Hauptlizenz bleibt gleich |
+
+```{r impact-filter, eval=FALSE}
+# Nur Kollegen mit Lizenzänderung anzeigen
+dplyr::filter(impact, license_change != "none")
+```
+
+**Hinweis zur Fallback-Logik in `sec_check_license_impact()`:**
+
+- Rolle bereits zugewiesen → Lizenz aus `LICENSINGUSERLICENSESBYROLE`
+- Rolle neu → Lizenz aus `LICENSINGROLELICENSEASSIGNMENTS` (via `get_role_license_assignments()`)
+- Keine Daten vorhanden → Rolle gilt als lizenzfrei → `license_change = "none"`
+
+---
+
+## Phase 5 – Entscheidung & Dokumentation
+
+```{r entscheidung, eval=FALSE}
+# Zusammenfassung für die Dokumentation
+ergebnis <- impact |>
+  dplyr::mutate(
+    button        = button_name,
+    neue_rolle    = neue_rolle,
+    entscheidung  = dplyr::if_else(
+      license_change == "none",
+      "Zuweisung kostenneutral",
+      paste0("Lizenzanpassung erforderlich: ", license_change)
+    )
+  )
+
+ergebnis
+```
+
+Benutzer mit `license_change != "none"` müssen vor der Zuweisung eine
+Lizenzanpassung in der Admin-Übersicht (PPAC) erhalten.
+
+---
+
+## Gesamtworkflow komprimiert
+
+```{r gesamtworkflow, eval=FALSE}
+library(dplyr)
+devtools::load_all("C:/Users/cedric/Documents/RProjects/D365Security")
+
+cnn               <- get_connection("PRJ", "C:/Users/CKAM/Documents/RProjects/D365Security/db_credentials.xlsx")
+button_name       <- "VendEditInvoiceArrangeDropDialog"
+referenz_benutzer <- "wibule01"
+kollegen          <- c("wibule02", "wibule03")
+
+# Schritt 1: Hierarchie und direkte Zugangsrollen
+hierarchie <- get_sql_security_hierarchy(cnn, resources = button_name)
+zugang     <- sec_get_direct_access_roles(hierarchie)
+roles      <- zugang$direkt |> dplyr::distinct(ROLEIDENTIFIER)       |> dplyr::pull(ROLEIDENTIFIER)
+duties     <- zugang$direkt |> dplyr::filter(!is.na(DUTYIDENTIFIER)) |> dplyr::pull(DUTYIDENTIFIER) |> unique()
+privileges <- zugang$direkt |> dplyr::distinct(PRIVILEGEIDENTIFIER)  |> dplyr::pull(PRIVILEGEIDENTIFIER)
+
+# Schritt 2: Lizenzüberblick der direkten Rollen (kompakt)
+get_role_license_assignments_compact(cnn, role_identifiers = roles)
+# Eine Rolle im Detail (eine Rolle pro Aufruf)
+# get_role_license_requirements(cnn, role_identifiers = neue_rolle)
+
+# Schritt 3: Wer hat bereits Zugang?
+get_user_duties(cnn, user_ids = referenz_benutzer, duty_identifiers = duties)
+get_user_privileges(cnn, user_ids = referenz_benutzer, privilege_identifiers = privileges)
+
+# Schritt 4: Lizenzklasse des Buttons
+lizenz_klasse <- get_object_license_class(cnn, aot_names = button_name)
+
+# Schritt 5: Rolle festlegen und Impact prüfen
+neue_rolle <- "_WIBU_DEBITOREN_RECHNUNGSERFASSUNG"
+impact     <- sec_check_license_impact(cnn, kollegen, neue_rolle)
+
+# Nur betroffene Kollegen
+dplyr::filter(impact, license_change != "none")
+```
+
+---
+
+## Funktionsübersicht
+
+| Funktion | Eingabe | Ausgabe |
+|---|---|---|
+| `get_sql_security_hierarchy()` | connection, resources | Vollständige Rollenhierarchie für einen Button |
+| `sec_get_direct_access_roles()` | hierarchie | `$direkt`: direkte Träger; `$via_subrole`: Vererbungspfade |
+| `get_role_license_assignments_compact()` | con, role_identifiers | Alle SKUs je Rolle in einer Zeile (pipe-separiert) |
+| `get_role_license_assignments()` | con, role_identifiers | Alle SKUs je Rolle (eine Zeile pro SKU) |
+| `get_role_license_requirements()` | con, role_identifiers | Minimale Lizenz je Rolle (2-Stufen-Algorithmus, eine Rolle) |
+| `get_user_duties()` | con, user_ids, duty_identifiers | Duties je Benutzer (filter optional) |
+| `get_user_privileges()` | con, user_ids, privilege_identifiers | Privileges je Benutzer (filter optional) |
+| `get_object_license_class()` | connection, aot_names | Lizenzklasse des Buttons je Zugriffsebene |
+| `get_privilege_license_map()` | con, privilege_identifiers | SKUs je Privilege mit Minimum-Flag |
+| `sec_check_license_impact()` | connection, user_ids, new_role_identifier | Lizenz-Delta je Kollege vor Rollenzuweisung |

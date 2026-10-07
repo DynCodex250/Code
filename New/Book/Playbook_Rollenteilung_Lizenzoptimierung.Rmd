@@ -1,0 +1,483 @@
+---
+title: "Playbook: Rollenteilung zur Lizenzoptimierung"
+subtitle: "Bereinigung einer lizenztechnisch überdimensionierten WIBU-Rolle"
+author: "IT / D365-Administration"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+always_allow_html: true
+---
+
+Dieses Playbook beschreibt, wie eine bestehende WIBU-Rolle, die durch gemischte
+Lizenzanforderungen (z.B. Finance/SCM + Commerce) unnötig viele Lizenzkosten
+verursacht, in spezialisierte Teilrollen aufgespalten wird.
+
+Jede neue Teilrolle ist genau einem Lizenztyp zugeordnet. Benutzer erhalten
+nur die Teilrollen, die ihrer tatsächlichen Tätigkeit entsprechen.
+
+**Referenzdokument:** `Protokoll – Analyse zusätzlicher Lizenzbedarf (Commerce)`
+
+---
+
+## Vorbereitung
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(data.table)
+library(dplyr)
+library(readxl)
+library(writexl)
+library(knitr)
+library(purrr)
+
+devtools::load_all("C:/Users/cedric/Documents/RProjects/D365Security")
+```
+
+```{r verbindung}
+cnn <- get_connection(
+  "PRJ",
+  "C:/Users/CKAM/Documents/RProjects/D365Security/db_credentials.xlsx"
+)
+```
+
+### Parameter
+
+```{r parameter}
+# AOT-Name der zu bereinigenden WIBU-Rolle (aus DB: AOTNAME der Rolle)
+quell_rolle_aot  <- "_WIBU_VERKAUF_INNENDIENST_MITARBEITER"
+
+# Anzeigename (für Dokumentation)
+quell_rolle_name <- "_WIBU Verkauf Innendienst Mitarbeiter"
+
+# Ausgabeverzeichnis für die neuen Rollen-XMLs
+output_dir <- "_WIBU Verkauf Innendienst Mitarbeiter/SecurityRole"
+
+# Pfad zum lokalen D365FO-AOT-Verzeichnis
+aot_root <- "C:/Users/CKAM/AppData/Local/Microsoft/Dynamics365/10.0.2645.90/PackagesLocalDirectory"
+
+# Namen der drei neuen Teilrollen
+neue_rollen <- list(
+  activity = list(
+    aot   = "_WIBU_Verkauf_Innendienst_Mitarbeiter_Activity",
+    label = "_WIBU Verkauf Innendienst Mitarbeiter Activity",
+    desc  = "Leserechte fuer Vertriebsdaten (Activity-Lizenz)"
+  ),
+  scm = list(
+    aot   = "_WIBU_Verkauf_Innendienst_Mitarbeiter_SCM",
+    label = "_WIBU Verkauf Innendienst Mitarbeiter SCM",
+    desc  = "Operative Taetigkeiten im Vertriebsumfeld (Finance/SCM-Lizenz)"
+  ),
+  commerce = list(
+    aot   = "_WIBU_Verkauf_Innendienst_Mitarbeiter_Commerce",
+    label = "_WIBU Verkauf Innendienst Mitarbeiter Commerce",
+    desc  = "Commerce-Funktionalitaeten fuer den Vertrieb (Commerce-Lizenz)"
+  )
+)
+```
+
+---
+
+## 1. Ausgangslage dokumentieren
+
+### 1a – Aktuelle Lizenzanforderung der Quellrolle
+
+```{r lizenz-ist}
+get_role_license_assignments_compact(cnn, role_identifiers = quell_rolle_aot)
+```
+
+### 1b – Betroffene Benutzer
+
+```{r benutzer-ist}
+benutzer_ist <- get_sql_user_role_assignments(cnn, roles = quell_rolle_aot)
+
+message("Benutzer mit Rolle '", quell_rolle_name, "': ", nrow(benutzer_ist))
+benutzer_ist
+```
+
+---
+
+## 2. Duty-Analyse: Lizenzanforderung pro Duty
+
+`get_duty_license_breakdown()` ermittelt für jede Duty der Quellrolle die
+minimale Lizenzanforderung — basierend auf den Privileges und deren Einträgen
+in `LICENSINGPRIVILEGEREQUIREMENTSDETAILEDVIEW`.
+
+```{r duty-breakdown}
+breakdown <- get_duty_license_breakdown(cnn, quell_rolle_aot)
+
+breakdown |>
+  knitr::kable(caption = paste(
+    "Duty-Lizenz-Breakdown:", quell_rolle_name
+  ))
+```
+
+### 2a – Zusammenfassung nach Lizenztyp
+
+```{r breakdown-zusammenfassung}
+breakdown |>
+  dplyr::count(LICENSE_CATEGORY, name = "Anzahl_Duties") |>
+  knitr::kable(caption = "Duties nach Lizenzkategorie")
+```
+
+### 2b – Duties ohne Lizenzinformation prüfen
+
+Duties mit `LICENSE_CATEGORY = "Unbekannt"` sind nicht in der Lizenz-View
+enthalten (typischerweise neue WIBU-Custom-Privileges). Sie müssen manuell
+klassifiziert werden.
+
+```{r unbekannte-duties}
+unbekannt <- breakdown |> dplyr::filter(LICENSE_CATEGORY == "Unbekannt")
+
+if (nrow(unbekannt) > 0) {
+  message("Folgende Duties konnten nicht automatisch klassifiziert werden:")
+  unbekannt |> dplyr::select(DUTYIDENTIFIER, DUTYNAME, LICENSE_DETAIL) |>
+    knitr::kable()
+} else {
+  message("Alle Duties konnten automatisch klassifiziert werden.")
+}
+```
+
+---
+
+## 3. Zuweisung der Duties zu den neuen Rollen
+
+Die Aufteilung folgt strikt der Lizenzkategorie aus Schritt 2.
+`"Unbekannt"`-Duties müssen manuell einer Kategorie zugewiesen werden
+(hier: konservativ → SCM).
+
+```{r duty-zuweisung}
+duties_activity <- breakdown |>
+  dplyr::filter(LICENSE_CATEGORY == "Activity") |>
+  dplyr::pull(DUTYIDENTIFIER)
+
+duties_scm <- breakdown |>
+  dplyr::filter(LICENSE_CATEGORY %in% c("Finance/SCM", "Unbekannt")) |>
+  dplyr::pull(DUTYIDENTIFIER)
+
+duties_commerce <- breakdown |>
+  dplyr::filter(LICENSE_CATEGORY == "Commerce") |>
+  dplyr::pull(DUTYIDENTIFIER)
+
+# Direkte Privileges (ohne Duty) — konservativ in SCM
+direkte_privileges <- breakdown |>
+  dplyr::filter(DUTYIDENTIFIER == "(direkt)") |>
+  dplyr::pull(DUTYIDENTIFIER)   # DUTYIDENTIFIER missbraucht als Marker
+
+message("Activity:    ", length(duties_activity), " Duties")
+message("Finance/SCM: ", length(duties_scm),      " Duties")
+message("Commerce:    ", length(duties_commerce),  " Duties")
+```
+
+### Zuweisung im Überblick
+
+```{r zuweisung-tabelle}
+breakdown |>
+  dplyr::mutate(
+    NEUE_ROLLE = dplyr::case_when(
+      LICENSE_CATEGORY == "Activity"             ~ neue_rollen$activity$label,
+      LICENSE_CATEGORY == "Commerce"             ~ neue_rollen$commerce$label,
+      LICENSE_CATEGORY %in% c("Finance/SCM",
+                               "Unbekannt")      ~ neue_rollen$scm$label
+    )
+  ) |>
+  dplyr::select(DUTYIDENTIFIER, DUTYNAME, LICENSE_CATEGORY, NEUE_ROLLE) |>
+  knitr::kable(caption = "Duty-Zuweisung zu neuen Rollen")
+```
+
+---
+
+## 4. Neue Rollen-XMLs erzeugen
+
+`create_role_xml()` baut die XML-Dateien von Grund auf — eine pro Teilrolle.
+
+```{r rollen-erzeugen}
+# Activity-Rolle (nur Leserechte, Activity-Lizenz)
+create_role_xml(
+  new_name    = neue_rollen$activity$aot,
+  new_label   = neue_rollen$activity$label,
+  description = neue_rollen$activity$desc,
+  duties      = duties_activity,
+  output_dir  = output_dir
+)
+
+# SCM-Rolle (operative Tätigkeiten, Finance/SCM-Lizenz)
+create_role_xml(
+  new_name    = neue_rollen$scm$aot,
+  new_label   = neue_rollen$scm$label,
+  description = neue_rollen$scm$desc,
+  duties      = duties_scm,
+  output_dir  = output_dir
+)
+
+# Commerce-Rolle (Commerce-Funktionalitäten)
+create_role_xml(
+  new_name    = neue_rollen$commerce$aot,
+  new_label   = neue_rollen$commerce$label,
+  description = neue_rollen$commerce$desc,
+  duties      = duties_commerce,
+  output_dir  = output_dir
+)
+```
+
+Die erzeugten XML-Dateien liegen in:
+
+```{r output-dateien}
+list.files(output_dir, pattern = "\\.xml$")
+```
+
+---
+
+## 5. Neue Rollen deployen (UI)
+
+### Schritt 5.1 – XMLs als AOT-Erweiterungsprojekt importieren
+
+1. Visual Studio → D365FO-Projekt öffnen
+2. **`*Add existing item*`** → alle drei XML-Dateien aus `r output_dir` hinzufügen
+3. **`*Build*`** → **`*Synchronize database*`**
+4. Sicherstellen, dass alle drei Rollen in
+   `Systemverwaltung > Sicherheit > Sicherheitskonfiguration > Rollen`
+   erscheinen
+
+### Schritt 5.2 – Rollen prüfen
+
+```{r deploy-pruefung}
+neue_aot_namen <- c(
+  neue_rollen$activity$aot,
+  neue_rollen$scm$aot,
+  neue_rollen$commerce$aot
+)
+
+get_role_license_assignments_compact(cnn, role_identifiers = neue_aot_namen)
+```
+
+**Erwartetes Ergebnis:**
+
+| Rolle | Erwartete Lizenz |
+|---|---|
+| `r neue_rollen$activity$label` | Activity / Team Member |
+| `r neue_rollen$scm$label` | Finance oder SCM |
+| `r neue_rollen$commerce$label` | Commerce |
+
+---
+
+## 6. Benutzermigration
+
+### 6a – Zuweisung analysieren
+
+Jeder Benutzer erhält mindestens die Activity-Rolle. SCM- und Commerce-Rollen
+werden nur bei tatsächlichem Bedarf vergeben.
+
+```{r migration-analyse}
+# Alle Benutzer der Quellrolle — jeder bekommt mindestens Activity
+import_activity <- benutzer_ist |>
+  dplyr::transmute(
+    USERID                 = USERID,
+    SECURITYROLEIDENTIFIER = neue_rollen$activity$aot,
+    SECURITYROLENAME       = neue_rollen$activity$label,
+    ORGANIZATIONID         = ORGANIZATIONID
+  )
+
+message("Benutzer fuer Activity-Rolle: ", nrow(import_activity))
+```
+
+### 6b – SCM- und Commerce-Zuweisung (fachliche Entscheidung)
+
+Die Zuweisung von SCM- und Commerce-Rolle erfordert eine fachliche Prüfung:
+welche Benutzer führen tatsächlich operative oder Commerce-Tätigkeiten aus?
+
+`analyze_role_license_decision()` liefert dafür die Grundlage: Die Funktion
+vergleicht die zugewiesenen Duties mit der Nutzung laut Telemetrie und leitet
+pro Benutzer und Lizenz eine Empfehlung ab.
+
+```{r entscheidungsgrundlage}
+# Telemetrie: Aufrufe pro Benutzer und Entry Point aus Application Insights.
+# Ohne Telemetrie (usage = NULL) lautet jede Empfehlung REVIEW.
+usage <- D365Licensing::load_telemetry_touches(D365Licensing::load_config())
+
+analyse <- analyze_role_license_decision(cnn, quell_rolle_aot, usage = usage)
+
+# Excel-Arbeitsmappe für die Abstimmung mit dem Fachbereich
+export_role_license_decision(
+  analyse,
+  role_identifier = quell_rolle_aot,
+  export_folder   = dirname(output_dir)
+)
+```
+
+Vor der Verwendung prüfen: Stimmt das Modell mit D365FO überein
+(`STATUS = match`), und deckt die Telemetrie die Benutzer und Entry Points
+der Rolle ausreichend ab?
+
+```{r entscheidung-pruefen}
+analyse$Reconciliation |> knitr::kable(caption = "Abgleich Modell / D365FO")
+analyse$DataQuality    |> knitr::kable(caption = "Abdeckung der Telemetrie")
+analyse$Savings        |> knitr::kable(caption = "Einsparung pro Lizenz")
+```
+
+Ein Benutzer erhält eine Teilrolle, sobald er mindestens eine ihrer Duties
+nutzt oder die Telemetrie die Duty nicht beurteilen kann (`NOT_MEASURABLE`,
+`NO_USER_TELEMETRY`). Nur wer keine Duty der Teilrolle geöffnet hat
+(`NOT_OBSERVED`), erhält sie nicht. Das Ergebnis ist ein Vorschlag: mit dem
+Fachbereich bestätigen und die Listen bei Bedarf unten manuell ergänzen.
+
+```{r migration-scm-commerce}
+duties_behalten <- analyse$UserDutyUsage |>
+  dplyr::filter(EVIDENCE != "NOT_OBSERVED")
+
+# Benutzer-IDs die SCM benötigen (operative Vertriebstätigkeiten):
+user_ids_scm <- duties_behalten |>
+  dplyr::filter(DUTYIDENTIFIER %in% duties_scm) |>
+  dplyr::pull(USERID) |>
+  unique()
+
+# Benutzer-IDs die Commerce benötigen:
+user_ids_commerce <- duties_behalten |>
+  dplyr::filter(DUTYIDENTIFIER %in% duties_commerce) |>
+  dplyr::pull(USERID) |>
+  unique()
+
+# Fachliche Korrekturen, z.B. user_ids_scm <- union(user_ids_scm, "user01")
+
+import_scm <- benutzer_ist |>
+  dplyr::filter(USERID %in% user_ids_scm) |>
+  dplyr::transmute(
+    USERID                 = USERID,
+    SECURITYROLEIDENTIFIER = neue_rollen$scm$aot,
+    SECURITYROLENAME       = neue_rollen$scm$label,
+    ORGANIZATIONID         = ORGANIZATIONID
+  )
+
+import_commerce <- benutzer_ist |>
+  dplyr::filter(USERID %in% user_ids_commerce) |>
+  dplyr::transmute(
+    USERID                 = USERID,
+    SECURITYROLEIDENTIFIER = neue_rollen$commerce$aot,
+    SECURITYROLENAME       = neue_rollen$commerce$label,
+    ORGANIZATIONID         = ORGANIZATIONID
+  )
+```
+
+### 6c – Import-Datei erzeugen
+
+```{r import-datei}
+import_gesamt <- dplyr::bind_rows(
+  import_activity,
+  import_scm,
+  import_commerce
+) |>
+  dplyr::arrange(USERID, SECURITYROLEIDENTIFIER, ORGANIZATIONID)
+
+writexl::write_xlsx(
+  import_gesamt,
+  file.path(
+    dirname(output_dir),
+    "Import_Neue_Rollenzuweisungen.xlsx"
+  )
+)
+
+message("Import-Datei erstellt: ", nrow(import_gesamt), " Zeilen")
+import_gesamt |> knitr::kable(caption = "Import: Neue Rollenzuweisungen")
+```
+
+### 6d – Import in D365 (UI)
+
+1. `Systemverwaltung > Sicherheit > Benutzer zu Rollen zuweisen`
+2. Massenimport über **`*SystemSecurityUserRoleOrganizationEntity*`**
+3. Importdatei: `Import_Neue_Rollenzuweisungen.xlsx`
+
+---
+
+## 7. Quellrolle entfernen
+
+### Schritt 7.1 – Rollenzuweisungen entziehen
+
+1. `Systemverwaltung > Sicherheit > Benutzer zu Rollen zuweisen`
+2. Rolle `r quell_rolle_name` auswählen
+3. **`*Benutzer manuell zuweisen/ausschließen*`**
+4. Alle Benutzer markieren → **`*Von Rolle ausschließen*`**
+
+### Schritt 7.2 – Rolle deaktivieren / löschen
+
+Die Quellrolle `r quell_rolle_name` wird nach erfolgreicher Migration nicht
+mehr benötigt und soll entfernt werden:
+
+1. `Systemverwaltung > Sicherheit > Sicherheitskonfiguration > Rollen`
+2. Rolle `r quell_rolle_name` suchen
+3. **`*Löschen*`** → bestätigen
+4. **`*Alle veröffentlichen*`**
+
+---
+
+## 8. Validierung
+
+### 8a – Neue Rollen haben erwartete Lizenzanforderung
+
+```{r validierung-lizenz}
+get_role_license_assignments_compact(cnn, role_identifiers = neue_aot_namen)
+```
+
+### 8b – Quellrolle hat keine Benutzer mehr
+
+```{r validierung-benutzer}
+rest <- get_sql_user_role_assignments(cnn, roles = quell_rolle_aot)
+
+if (nrow(rest) == 0) {
+  message("OK: Keine Benutzer mehr in Quellrolle '", quell_rolle_name, "'.")
+} else {
+  message("WARNUNG: ", nrow(rest), " Benutzer noch in Quellrolle!")
+  rest |> knitr::kable()
+}
+```
+
+### 8c – Alle Benutzer haben mindestens die Activity-Rolle
+
+```{r validierung-coverage}
+zuweisungen_neu <- get_sql_user_role_assignments(
+  cnn,
+  roles = neue_aot_namen
+)
+
+benutzer_ohne_activity <- benutzer_ist |>
+  dplyr::anti_join(
+    zuweisungen_neu |>
+      dplyr::filter(SECURITYROLEIDENTIFIER == neue_rollen$activity$aot),
+    by = "USERID"
+  )
+
+if (nrow(benutzer_ohne_activity) == 0) {
+  message("OK: Alle Benutzer haben die Activity-Rolle.")
+} else {
+  message("WARNUNG: ", nrow(benutzer_ohne_activity),
+          " Benutzer ohne Activity-Rolle!")
+  benutzer_ohne_activity |> knitr::kable()
+}
+```
+
+---
+
+## 9. Zusammenfassung
+
+### Abgedeckt durch Package-Funktionen
+
+| Schritt | Funktion |
+|---|---|
+| Aktuelle Lizenzanforderung prüfen | `get_role_license_assignments_compact()` |
+| Betroffene Benutzer laden | `get_sql_user_role_assignments()` |
+| Duty-Lizenz-Breakdown | `get_duty_license_breakdown()` |
+| Neue Rollen-XMLs erzeugen | `create_role_xml()` |
+| Entscheidungsgrundlage pro Benutzer | `analyze_role_license_decision()` + `export_role_license_decision()` |
+| Neue Rollenzuweisungen generieren | Vorschlag aus `analyse$UserDutyUsage` + `writexl::write_xlsx()` |
+| Validierung Lizenzen | `get_role_license_assignments_compact()` |
+| Validierung Benutzer | `get_sql_user_role_assignments()` |
+
+### Ergebnis
+
+```{r ergebnis-tabelle}
+tibble::tribble(
+  ~Rolle,                            ~Lizenz,       ~Benutzer,
+  neue_rollen$activity$label, "Activity",    "alle (Leserechte)",
+  neue_rollen$scm$label,      "Finance/SCM", "nur operative Vertriebsmitarbeiter",
+  neue_rollen$commerce$label, "Commerce",    "nur mit Commerce-Bedarf"
+) |>
+  knitr::kable(caption = "Zielbild: Neue Rollenstruktur")
+```
