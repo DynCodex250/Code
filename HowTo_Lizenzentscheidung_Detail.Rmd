@@ -1,0 +1,955 @@
+# HowTo: Lizenz-Entscheidungsgrundlage für eine Rolle
+
+## Überblick
+
+Eine Rolle, die viele Benutzer besitzen, erfordert mehrere Lizenzen
+gleichzeitig. Dieses Dokument zeigt, wie man für eine solche Rolle auswertet,
+
+- welche Duty, welches Privilege und welcher Entry Point welche Lizenz auslöst,
+- welcher Benutzer welche Duty tatsächlich nutzt und
+- bei welchen Benutzern eine Lizenz entfallen könnte.
+
+Die Auswertung besteht aus drei Zeilen:
+
+```{r drei-zeilen, eval=FALSE}
+usage    <- D365Licensing::load_telemetry_touches(D365Licensing::load_config())
+analysis <- analyze_role_license_decision(cnn, "_WIBU_VERKAUF_INNENDIENST_MITARBEITER", usage = usage)
+export_role_license_decision(analysis, "_WIBU_VERKAUF_INNENDIENST_MITARBEITER")
+```
+
+| Zeile | Was sie tut | Ergebnis |
+|---|---|---|
+| `usage` | Lädt aus Application Insights, welcher Benutzer welches Formular wie oft geöffnet hat. | Eine Tabelle |
+| `analysis` | Liest Rolle, Benutzer und Lizenzen aus der Datenbank und verknüpft sie mit `usage`. | Eine Liste mit elf Tabellen |
+| `export_...` | Schreibt die elf Tabellen in eine Excel-Datei, ein Blatt pro Tabelle. | Pfad der Datei |
+
+Der größte Teil dieses Dokuments erklärt die elf Tabellen in `analysis`.
+
+**Zu den Beispielen:** Alle Beispielwerte stammen aus einer erfundenen
+Beispielrolle mit fünf Duties und fünf Benutzern. Die Tabellen wurden mit den
+echten Funktionen erzeugt, nicht von Hand geschrieben. Die Beispielrolle steht
+im Abschnitt "Die Beispielrolle".
+
+---
+
+## Voraussetzungen
+
+```{r setup, eval=FALSE}
+devtools::load_all("C:/Users/CKAM/Documents/RProjects/D365Security")
+
+cnn <- get_connection(
+  "PRJ",
+  "C:/Users/CKAM/Documents/RProjects/D365Security/db_credentials.xlsx"
+)
+
+rolle <- "_WIBU_VERKAUF_INNENDIENST_MITARBEITER"   # AOT-Name der Rolle
+```
+
+- **Datenbank:** Die Auswertung führt nur `SELECT`-Abfragen aus. Sie ändert
+  nichts in D365FO.
+- **Rolle:** Verlangt wird der AOT-Name (`ROLEIDENTIFIER`), genau eine Rolle
+  pro Aufruf.
+- **Telemetrie:** Für Schritt 1 muss das Paket D365Licensing eingerichtet sein
+  (siehe Schritt 1). Ohne Telemetrie läuft die Auswertung trotzdem, liefert
+  aber keine Empfehlung pro Benutzer.
+
+---
+
+## Schritt 1 – `usage`: Wer hat was geöffnet?
+
+```{r usage, eval=FALSE}
+cfg   <- D365Licensing::load_config()
+usage <- D365Licensing::load_telemetry_touches(cfg)
+```
+
+`usage` enthält eine Zeile pro Benutzer und geöffnetem Formular:
+
+| user_Id | name | last_seen | duration_seconds | touches |
+|---|---|---|---:|---:|
+| anna | SalesTableListPage | 2026-09-28T09:12:00Z | 5400 | 140 |
+| anna | CustTableListPage | 2026-09-27T14:03:00Z | 900 | 35 |
+| anna | LedgerJournalTable | 2026-08-03T10:20:00Z | 120 | 4 |
+| bernd | CustTableListPage | 2026-09-15T08:45:00Z | 300 | 12 |
+| clara | RetailStoreTable | 2026-09-30T16:30:00Z | 2100 | 48 |
+
+| Spalte | Bedeutung |
+|---|---|
+| `user_Id` | Benutzer. Muss der D365-Benutzerkennung (`USERID`) entsprechen. |
+| `name` | Name des geöffneten Formulars. Muss dem AOT-Namen des Menüelements entsprechen. |
+| `last_seen` | Zeitpunkt des letzten Aufrufs. |
+| `duration_seconds` | Summe der Verweildauer. Wird von der Auswertung nicht verwendet. |
+| `touches` | Anzahl der Aufrufe im Auswertungszeitraum. |
+
+**Lesebeispiel:** anna hat die Auftragsliste 140-mal geöffnet, zuletzt am
+28.09.2026. dirk kommt in der Tabelle nicht vor.
+
+### Vor dem Weitermachen prüfen
+
+```{r usage-pruefen, eval=FALSE}
+attr(usage, "status")   # muss "OK" sein
+nrow(usage)             # muss größer als 0 sein
+```
+
+| `status` | Bedeutung | Folge für Schritt 2 |
+|---|---|---|
+| `OK` | Daten geladen. | Normaler Ablauf. |
+| `OK_EMPTY` | Abfrage lief, lieferte aber keine Zeilen. | Alle Benutzer erhalten `NO_USER_TELEMETRY`. |
+| `UNKNOWN` | Telemetrie deaktiviert oder Verbindung fehlgeschlagen. `usage` ist dann eine leere Tabelle ohne Spalten. | Schritt 2 bricht ab mit "usage braucht eine der Spalten". |
+
+Bei `UNKNOWN` die Einrichtung von D365Licensing prüfen: In `config.yml` muss
+`telemetry.enabled: true` stehen, und in `.Renviron` müssen
+`D365_APPINSIGHTS_APP_ID` und `D365_APPINSIGHTS_API_KEY` gesetzt sein. Die
+Verbindung lässt sich mit `D365Licensing::test_appinsights_connection(cfg)`
+testen. Der Auswertungszeitraum steht in `telemetry.telemetry_days`.
+
+### Was die Telemetrie sieht und was nicht
+
+Application Insights zeichnet das **Öffnen von Formularen** auf. Das sind
+Menüelemente vom Typ "Menu item display".
+
+Nicht aufgezeichnet werden Aktionen (Menu item action), Ausgaben wie Berichte
+(Menu item output), Service Operations, Data Entities und Batch-Verarbeitung.
+Für diese Objekte kann die Auswertung nie behaupten, sie seien ungenutzt.
+Dieser Punkt bestimmt das gesamte Ergebnis, siehe "Vier Begriffe".
+
+### Varianten
+
+**Ohne Telemetrie.** Schritt 1 entfällt, `usage` wird weggelassen. Die Tabellen
+zu Duties, Privileges und Entry Points sind vollständig. Bei den Benutzern
+lautet jede Empfehlung `REVIEW`.
+
+```{r ohne-telemetrie, eval=FALSE}
+analysis <- analyze_role_license_decision(cnn, rolle)
+```
+
+**Telemetrie aus dem Portal.** `get_insights_page_views_query()` liefert den
+Text einer KQL-Abfrage. Diese im Application-Insights-Portal ausführen, das
+Ergebnis als CSV speichern und einlesen. Die Spalten dieser Abfrage
+(`user_Id`, `name`, `TouchesProUser`, `timestamp`) werden ebenfalls erkannt.
+
+```{r usage-portal, eval=FALSE}
+cat(get_insights_page_views_query())          # Abfragetext für das Portal
+usage <- read.csv("pageviews_export.csv")     # exportiertes Ergebnis
+```
+
+---
+
+## Schritt 2 – `analysis`: die Auswertung
+
+```{r analysis, eval=FALSE}
+analysis <- analyze_role_license_decision(
+  con             = cnn,
+  role_identifier = rolle,
+  usage           = usage
+)
+```
+
+| Parameter | Bedeutung | Standard |
+|---|---|---|
+| `con` | Datenbankverbindung. | |
+| `role_identifier` | AOT-Name genau einer Rolle. | |
+| `usage` | Telemetrie aus Schritt 1, oder `NULL`. | `NULL` |
+| `base_group_pattern` | Woran eine Base-Lizenz erkannt wird: Muster für die Lizenzgruppe. | `"^Base"` |
+| `measurable_type_pattern` | Welche Ressourcentypen die Telemetrie sieht: Muster für den Typ. | `"display"` |
+
+### Was dabei passiert
+
+| Nr. | Teilschritt | Gelesen aus |
+|---|---|---|
+| 1 | Alle Duties, Privileges und Entry Points der Rolle laden. | `UserSecGovRelatedObjects` |
+| 2 | Für jeden Entry Point ermitteln, welche Lizenzen ihn abdecken. | `LICENSINGPRIVILEGEREQUIREMENTSDETAILEDVIEW` |
+| 3 | Die Benutzer der Rolle laden. | `SystemSecurityUserRoleEntity` |
+| 4 | Die heutigen Lizenzen dieser Benutzer über alle ihre Rollen laden. | `LICENSINGUSERLICENSESBYROLE` |
+| 5 | Die Lizenzen laden, die D365FO selbst für die Rolle ausweist. | `LICENSINGROLELICENSEASSIGNMENTS` |
+| 6 | Alles mit `usage` verknüpfen und die elf Tabellen berechnen. | (keine Abfrage) |
+
+Deaktivierte Benutzer werden nicht ausgewertet. Ihre Anzahl steht in der
+Tabelle `DataQuality`.
+
+### Das Ergebnis
+
+`analysis` ist eine Liste. Jedes Element ist eine Tabelle.
+
+```{r analysis-zugriff, eval=FALSE}
+names(analysis)          # die elf Tabellennamen
+analysis$Savings         # eine Tabelle ansehen
+View(analysis$UserDecisions)
+```
+
+```text
+ [1] "Savings"           "UserSummary"       "UserDecisions"
+ [4] "UserDutyUsage"     "DutyDrivers"       "PrivilegeDrivers"
+ [7] "EntryPointDrivers" "RoleLicenses"      "Reconciliation"
+[10] "DataQuality"       "Legend"
+```
+
+### Meldungen, die auftreten können
+
+| Meldung | Ursache | Abhilfe |
+|---|---|---|
+| Fehler: "Keine Hierarchie gefunden fuer Rolle" | Der AOT-Name der Rolle existiert nicht. | Schreibweise prüfen; gemeint ist `ROLEIDENTIFIER`, nicht der Anzeigename. |
+| Fehler: "usage braucht eine der Spalten" | `usage` ist leer und ohne Spalten (Status `UNKNOWN`). | Telemetrie einrichten oder `usage` weglassen. |
+| Fehler: "Telemetrie-Zeile(n) ohne lesbare Anzahl der Aufrufe" | In `touches` stehen leere oder nicht numerische Werte. | Betroffene Zeilen korrigieren oder entfernen. |
+| Warnung: "Kein messbarer Entry Point der Rolle kommt in der Telemetrie vor" | Kein einziger Formularname der Rolle taucht in `usage` auf. Vermutlich passen die Namen nicht zu den AOT-Namen. | Spalte `name` in `usage` mit `ENTRYPOINT` in `EntryPointDrivers` vergleichen. Die Telemetrie wird in diesem Fall nicht ausgewertet. |
+
+---
+
+## Schritt 3 – `export_role_license_decision()`: die Excel-Datei
+
+```{r export, eval=FALSE}
+pfad <- export_role_license_decision(
+  analysis,
+  role_identifier = rolle,
+  export_folder   = "Data"
+)
+pfad
+```
+
+- **Dateiname:** `D365FO_License_Decision_<Rolle>.xlsx`. Zeichen, die in
+  Dateinamen nicht erlaubt sind, werden durch `_` ersetzt.
+- **Ordner:** `export_folder`, relativ zum Arbeitsverzeichnis. Er wird
+  angelegt, falls er fehlt. Standard ist `"Data"`.
+- **Inhalt:** ein Blatt pro Tabelle, in derselben Reihenfolge und mit
+  denselben Namen wie in `analysis`. Jedes Blatt hat eine fette Kopfzeile und
+  einen Filter.
+- **Leere Tabellen** erhalten kein Blatt. Fehlt zum Beispiel `Savings`, gibt
+  es keine Benutzer mit Base-Lizenz in der Auswertung.
+- **Vorhandene Datei** gleichen Namens wird überschrieben.
+
+---
+
+## Vier Begriffe, die man kennen muss
+
+### 1. Mindestlizenz
+
+Für jeden Entry Point führt D365FO mehrere Lizenzen, die ihn abdecken. Die
+**Mindestlizenz** (`MIN_SKU`) ist die günstigste davon, also die mit der
+niedrigsten `PRIORITY`.
+
+Beispiel: Die Debitorenliste `CUSTTABLELISTPAGE` wird im Lesezugriff von fünf
+Lizenzen abgedeckt: Team Members, Operations - Activity, Commerce, Finance und
+Supply Chain Management. Die günstigste ist Team Members. Also ist die
+Mindestlizenz Team Members.
+
+Die Mindestlizenz wird nach oben weitergegeben:
+
+- `PRIVILEGE_SKU` ist die teuerste Mindestlizenz unter den Entry Points eines
+  Privilege.
+- `DUTY_SKU` ist die teuerste Mindestlizenz unter den Privileges einer Duty.
+
+So lässt sich von der Duty bis zum einzelnen Entry Point zurückverfolgen,
+woher eine Lizenz kommt.
+
+### 2. Base-Lizenz und Light-Lizenz
+
+**Base-Lizenzen** sind die teuren Anwendungslizenzen: Commerce, Finance,
+Supply Chain Management und weitere. Die Auswertung erkennt sie daran, dass
+ihre Lizenzgruppe mit "Base" beginnt (Parameter `base_group_pattern`).
+
+**Light-Lizenzen** sind alle übrigen, zum Beispiel Team Members und
+Operations - Activity. Wer eine Base-Lizenz besitzt, braucht keine
+Light-Lizenz zusätzlich.
+
+Eine Einsparung zählt die Auswertung nur bei Base-Lizenzen.
+
+### 3. Messbar
+
+Ein Entry Point ist **messbar**, wenn die Telemetrie seinen Aufruf sieht. Das
+gilt nur für Formulare (Menu item display).
+
+Eine Duty wird einem Benutzer als Ganzes gegeben oder genommen. Deshalb zählt
+ihr schwächster Teil: Enthält eine Duty ein Formular und zusätzlich eine
+Aktion mit eigener Lizenz, dann sagt ein ungeöffnetes Formular nichts darüber,
+ob der Benutzer die Aktion verwendet.
+
+Beispiel: Die Duty `SalesOrderMaintain` enthält
+
+- die Auftragsliste (Formular, messbar), Mindestlizenz Supply Chain Management,
+- das Buchen von Rechnungen (Aktion, nicht messbar), Mindestlizenz Finance.
+
+Der Finance-Teil dieser Duty ist für die Telemetrie unsichtbar. Hat ein
+Benutzer die Auftragsliste nie geöffnet, lautet das Ergebnis deshalb nicht
+"ungenutzt", sondern "nicht messbar". Die Spalte `UNMEASURABLE_LICENSES` nennt
+den unsichtbaren Teil: `Finance`.
+
+### 4. Von der Evidenz zur Einsparung
+
+Die Auswertung geht in drei Stufen vor. Jede Stufe hat eine eigene Tabelle.
+
+**Stufe 1 – Evidenz pro Benutzer und Duty** (`UserDutyUsage`). Geprüft wird in
+dieser Reihenfolge:
+
+| `EVIDENCE` | Bedingung |
+|---|---|
+| `USED` | Der Benutzer hat mindestens einen Entry Point der Duty geöffnet. |
+| `NO_USER_TELEMETRY` | Der Benutzer kommt in der Telemetrie überhaupt nicht vor. |
+| `NOT_MEASURABLE` | Die Duty hat kein messbares Formular, oder einer ihrer Lizenzteile ist unsichtbar. |
+| `NOT_OBSERVED` | Alles an der Duty ist messbar, und der Benutzer hat nichts davon geöffnet. |
+
+**Stufe 2 – Empfehlung pro Benutzer und Lizenz** (`UserDecisions`). Betrachtet
+werden alle Duties der Rolle, die diese Lizenz enthalten:
+
+| `DECISION` | Bedingung |
+|---|---|
+| `KEEP` | Mindestens eine dieser Duties ist `USED`. |
+| `REMOVE_CANDIDATE` | Jede dieser Duties ist `NOT_OBSERVED`. |
+| `REVIEW` | Alles andere. Die Telemetrie kann nicht entscheiden. |
+
+**Stufe 3 – Einsparung** (`Savings`). Eine Lizenz gilt für einen Benutzer nur
+dann als eingespart, wenn alle vier Bedingungen zutreffen:
+
+1. Die Empfehlung ist `REMOVE_CANDIDATE`.
+2. Es ist eine Base-Lizenz.
+3. D365FO weist dem Benutzer die Lizenz heute über diese Rolle zu.
+4. Keine andere Rolle des Benutzers erfordert dieselbe Lizenz.
+
+Bedingung 4 ist die wichtigste. Die Lizenz eines Benutzers ergibt sich aus
+allen seinen Rollen zusammen. Eine Lizenz aus dieser einen Rolle zu entfernen
+spart nichts, solange eine andere Rolle sie weiter auslöst.
+
+---
+
+## Das Ergebnis lesen: Übersicht und Reihenfolge
+
+| Tabelle | Eine Zeile pro | Beantwortet |
+|---|---|---|
+| `Reconciliation` | Lizenz | Stimmt die Berechnung mit dem überein, was D365FO für die Rolle anzeigt? |
+| `DataQuality` | Kennzahl | Wie viel deckt die Telemetrie ab? |
+| `RoleLicenses` | Lizenz | Welche Lizenzen braucht die Rolle, und über welche Duties? |
+| `DutyDrivers` | Duty | Welche Lizenz braucht jede Duty, und warum? |
+| `PrivilegeDrivers` | Duty und Privilege | Welches Privilege löst die Lizenz der Duty aus? |
+| `EntryPointDrivers` | Privilege und Entry Point | Welcher Entry Point löst welche Lizenz aus? |
+| `UserDutyUsage` | Benutzer und Duty | Wer nutzt welche Duty tatsächlich? |
+| `UserDecisions` | Benutzer und Lizenz | Bei wem kann welche Lizenz entfallen? |
+| `UserSummary` | Benutzer | Welche Lizenzen hat der Benutzer heute, welche danach? |
+| `Savings` | Lizenz | Wie viele Lizenzen lassen sich einsparen? |
+| `Legend` | Begriff | Was bedeuten die Statuswerte? |
+
+**Empfohlene Lesereihenfolge:**
+
+1. **Vertrauen:** zuerst `Reconciliation` und `DataQuality`. Sind diese beiden
+   nicht in Ordnung, sind alle anderen Tabellen nicht belastbar.
+2. **Ursache:** `RoleLicenses`, dann `DutyDrivers`, `PrivilegeDrivers`,
+   `EntryPointDrivers`. Von der Rolle hinunter zum Entry Point.
+3. **Benutzer:** `UserDutyUsage`, dann `UserDecisions`, `UserSummary`,
+   `Savings`. Von der einzelnen Beobachtung hinauf zur Gesamtzahl.
+
+Die Excel-Datei ist anders sortiert: `Savings` steht vorne, weil das die Zahl
+ist, nach der zuerst gefragt wird. Die beiden Vertrauens-Tabellen stehen dort
+fast am Ende.
+
+---
+
+## Die Beispielrolle
+
+Die Rolle `_WIBU_VERKAUF_INNENDIENST_MITARBEITER` hat im Beispiel fünf Duties:
+
+| Duty | Inhalt | Mindestlizenz |
+|---|---|---|
+| `SalesOrderMaintain` | Auftragsliste (Formular) und Rechnungen buchen (Aktion) | Supply Chain Management, dazu Finance für die Aktion |
+| `RetailStoreMaintain` | Filialen pflegen (Formular) | Commerce |
+| `CustCustomerMasterInquire` | Debitorenliste (Formular, nur lesen) | Team Members |
+| `WIBUAuftragZusatz` | Eigenentwicklung (Formular) | unbekannt, fehlt in der Lizenz-View |
+| `(direkt)` | Ein Privilege ohne Duty: Rechnungsdienst (Service Operation) | Finance |
+
+Die Rolle braucht damit drei Base-Lizenzen: Supply Chain Management, Finance
+und Commerce.
+
+Fünf Benutzer besitzen die Rolle:
+
+| Benutzer | Verhalten laut Telemetrie |
+|---|---|
+| anna | Arbeitet mit Aufträgen und Debitoren. Öffnet nie die Filialen. |
+| bernd | Öffnet nur die Debitorenliste. Hat Finance zusätzlich über die Rolle `LEDGERACCOUNTANT`. |
+| clara | Arbeitet nur mit Filialen. |
+| dirk | Kommt in der Telemetrie nicht vor. |
+| erik | Deaktiviert. |
+
+---
+
+## Die Tabellen im Einzelnen
+
+### `Reconciliation` – stimmt die Berechnung?
+
+| SKUNAME | IN_DRIVER_TABLE | IN_MICROSOFT_VIEW | STATUS |
+|---|---|---|---|
+| Commerce | TRUE | TRUE | match |
+| Finance | TRUE | TRUE | match |
+| Supply Chain Management | TRUE | TRUE | match |
+
+Die Tabelle vergleicht zwei Listen: die Lizenzen, die diese Auswertung für die
+Rolle berechnet, und die Lizenzen, die D365FO selbst für die Rolle ausweist.
+
+| Spalte | Bedeutung |
+|---|---|
+| `IN_DRIVER_TABLE` | Die Auswertung hält die Lizenz für nötig. |
+| `IN_MICROSOFT_VIEW` | D365FO weist die Lizenz für die Rolle aus. |
+| `STATUS` | `match`, `only_driver_table` oder `only_microsoft_view`. |
+
+**So liest man es:** Alle Zeilen müssen `match` zeigen.
+
+- `only_driver_table`: Die Auswertung findet eine Lizenz, die D365FO nicht
+  ausweist. Die Auswertung ist für diese Rolle zu streng.
+- `only_microsoft_view`: D365FO verlangt eine Lizenz, deren Ursache die
+  Auswertung nicht findet. Dann fehlt in den Ursachen-Tabellen etwas.
+
+Bei jeder Abweichung die betroffene Lizenz erst klären, bevor Entscheidungen
+auf den übrigen Tabellen aufbauen.
+
+### `DataQuality` – wie viel sieht die Telemetrie?
+
+| KENNZAHL | WERT |
+|---|---|
+| Benutzer mit Rolle | 4 |
+| davon in der Telemetrie gefunden | 3 |
+| davon ohne Lizenzzeile in D365FO | 0 |
+| Deaktivierte Benutzer (nicht ausgewertet) | 1 |
+| Entry Points der Rolle | 6 |
+| davon per Telemetrie messbar | 4 |
+| Entry Points in der Telemetrie der Rollenbenutzer | 4 |
+| davon in der Rolle enthalten | 3 |
+| Ältester letzter Zugriff | 2026-08-03 |
+| Neuester letzter Zugriff | 2026-09-30 |
+
+**So liest man es:**
+
+- **Benutzer:** 4 aktive Benutzer haben die Rolle, 3 davon kommen in der
+  Telemetrie vor (dirk fehlt). erik ist deaktiviert und nicht mitgezählt.
+- **Entry Points:** Von 6 Entry Points der Rolle sind 4 Formulare und damit
+  messbar. Die Aktion und die Service Operation sind es nicht.
+- **Abgleich der Namen:** Die Rollenbenutzer haben 4 verschiedene Formulare
+  geöffnet, 3 davon gehören zur Rolle. Das vierte (`LedgerJournalTable`)
+  stammt aus einer anderen Rolle von anna.
+- **Zeitraum:** Die Zugriffe reichen vom 03.08. bis zum 30.09.2026.
+
+**Warnzeichen:**
+
+| Beobachtung | Mögliche Ursache |
+|---|---|
+| "in der Telemetrie gefunden" ist viel kleiner als "Benutzer mit Rolle" | Die Benutzerkennung der Telemetrie (`user_Id`) entspricht nicht der `USERID`. |
+| "per Telemetrie messbar" ist 0 oder sehr klein | Der Ressourcentyp der Formulare enthält nicht das Wort "display". Dann `measurable_type_pattern` anpassen. |
+| "davon in der Rolle enthalten" ist 0 | Die Formularnamen der Telemetrie passen nicht zu den AOT-Namen. |
+| "Ältester letzter Zugriff" liegt nur wenige Wochen zurück | Application Insights bewahrt die Daten kürzer auf als erwartet. Seltene Tätigkeiten erscheinen dann als ungenutzt. |
+
+### `RoleLicenses` – welche Lizenzen braucht die Rolle?
+
+| SKUNAME | PRIORITY | IS_BASE_LICENSE | DUTY_COUNT | PRIVILEGE_COUNT | ENTRYPOINT_COUNT | DUTIES | REQUIRED |
+|---|---:|---|---:|---:|---:|---|---|
+| Supply Chain Management | 80 | TRUE | 1 | 1 | 1 | SalesOrderMaintain | TRUE |
+| Finance | 70 | TRUE | 2 | 2 | 2 | (direkt), SalesOrderMaintain | TRUE |
+| Commerce | 60 | TRUE | 1 | 1 | 1 | RetailStoreMaintain | TRUE |
+| Team Members | 20 | FALSE | 1 | 1 | 1 | CustCustomerMasterInquire | FALSE |
+
+| Spalte | Bedeutung |
+|---|---|
+| `SKUNAME`, `PRIORITY` | Lizenz und ihre Rangfolge. Höher bedeutet teurer. |
+| `SKU_GROUP` | Lizenzgruppe (im Beispiel oben nicht gezeigt). |
+| `IS_BASE_LICENSE` | `TRUE` für Base-Lizenzen. |
+| `DUTY_COUNT`, `PRIVILEGE_COUNT`, `ENTRYPOINT_COUNT` | Wie viele Objekte der Rolle genau diese Lizenz als Mindestlizenz haben. |
+| `DUTIES` | Die betroffenen Duties. |
+| `REQUIRED` | `TRUE`, wenn die Rolle die Lizenz braucht. Light-Lizenzen stehen auf `FALSE`, sobald eine Base-Lizenz nötig ist. |
+
+**So liest man es:** Die Rolle braucht drei Base-Lizenzen. Supply Chain
+Management kommt aus einer einzigen Duty, Finance aus zwei Stellen. Die Spalte
+`DUTIES` zeigt, welche Duties man auslagern müsste, damit die Rolle eine
+Lizenz nicht mehr braucht.
+
+### `DutyDrivers` – welche Lizenz braucht jede Duty?
+
+| DUTYIDENTIFIER | DUTY_SKU | SKUS_IN_DUTY | PRIVILEGE_COUNT | DRIVER_PRIVILEGES | UNKNOWN_PRIVILEGE_COUNT | UNMEASURABLE_LICENSES | SOLE_SOURCE_OF |
+|---|---|---|---:|---|---:|---|---|
+| SalesOrderMaintain | Supply Chain Management | Supply Chain Management \| Finance | 2 | SalesTableMaintain | 0 | Finance | Supply Chain Management |
+| (direkt) | Finance | Finance | 1 | CustInvoiceServiceInvoke | 0 | Finance | |
+| RetailStoreMaintain | Commerce | Commerce | 1 | RetailStoreTableMaintain | 0 | | Commerce |
+| CustCustomerMasterInquire | Team Members | Team Members | 1 | CustTableView | 0 | | Team Members |
+| WIBUAuftragZusatz | NA | | 1 | | 1 | | |
+
+| Spalte | Bedeutung |
+|---|---|
+| `DUTYIDENTIFIER`, `DUTYNAME` | Duty. `(direkt)` steht für Privileges, die der Rolle ohne Duty zugewiesen sind. |
+| `DUTY_SKU`, `DUTY_PRIORITY` | Teuerste Mindestlizenz in der Duty. `NA`, wenn keine Lizenzinformation vorliegt. |
+| `IS_BASE_LICENSE` | `TRUE`, wenn `DUTY_SKU` eine Base-Lizenz ist. |
+| `SKUS_IN_DUTY` | Alle Mindestlizenzen, die in der Duty vorkommen, teuerste zuerst. |
+| `PRIVILEGE_COUNT`, `ENTRYPOINT_COUNT` | Umfang der Duty. |
+| `DRIVER_PRIVILEGES` | Die Privileges, die `DUTY_SKU` auslösen. |
+| `UNKNOWN_PRIVILEGE_COUNT` | Privileges mit ungeklärter Lizenz. |
+| `UNMEASURABLE_LICENSES` | Lizenzteile der Duty ohne messbares Formular. |
+| `SOLE_SOURCE_OF` | Lizenzen, die in der Rolle nur über diese Duty nötig sind. |
+
+**So liest man es:**
+
+- `SalesOrderMaintain` braucht Supply Chain Management, ausgelöst vom
+  Privilege `SalesTableMaintain`. Die Duty enthält außerdem Finance.
+- `SOLE_SOURCE_OF = Supply Chain Management`: Diese Duty ist die einzige
+  Quelle von Supply Chain Management in der Rolle. Lagert man sie in eine
+  eigene Rolle aus, braucht die Restrolle diese Lizenz nicht mehr.
+- `UNMEASURABLE_LICENSES = Finance`: Der Finance-Teil der Duty ist für die
+  Telemetrie unsichtbar. Für diese Duty wird es nie ein `NOT_OBSERVED` geben.
+- `WIBUAuftragZusatz` hat `DUTY_SKU = NA` und ein unbekanntes Privilege. Die
+  Lizenz dieser Duty muss von Hand bewertet werden.
+
+Für die Rollenteilung ist `SOLE_SOURCE_OF` die wichtigste Spalte.
+
+```{r duty-abfragen, eval=FALSE}
+# Duties, deren Auslagerung eine Lizenz aus der Rolle nimmt
+analysis$DutyDrivers |> dplyr::filter(SOLE_SOURCE_OF != "")
+
+# Duties, die von Hand bewertet werden müssen
+analysis$DutyDrivers |> dplyr::filter(UNKNOWN_PRIVILEGE_COUNT > 0)
+```
+
+### `PrivilegeDrivers` – welches Privilege löst die Lizenz aus?
+
+| DUTYIDENTIFIER | PRIVILEGEIDENTIFIER | PRIVILEGE_SKU | DRIVES_DUTY | DRIVER_ENTRYPOINTS | LICENSE_STATUS |
+|---|---|---|---|---|---|
+| SalesOrderMaintain | SalesTableMaintain | Supply Chain Management | TRUE | SALESTABLELISTPAGE | LICENSED |
+| (direkt) | CustInvoiceServiceInvoke | Finance | TRUE | CUSTINVOICESERVICE | LICENSED |
+| SalesOrderMaintain | SalesInvoicePost | Finance | FALSE | SALESFORMLETTER_INVOICE | LICENSED |
+| RetailStoreMaintain | RetailStoreTableMaintain | Commerce | TRUE | RETAILSTORETABLE | LICENSED |
+| CustCustomerMasterInquire | CustTableView | Team Members | TRUE | CUSTTABLELISTPAGE | LICENSED |
+| WIBUAuftragZusatz | WIBUAuftragZusatzView | NA | FALSE | | UNKNOWN_PRIVILEGE |
+
+| Spalte | Bedeutung |
+|---|---|
+| `PRIVILEGE_SKU`, `PRIVILEGE_PRIORITY` | Teuerste Mindestlizenz im Privilege. |
+| `IS_BASE_LICENSE` | `TRUE`, wenn `PRIVILEGE_SKU` eine Base-Lizenz ist. |
+| `DRIVES_DUTY` | `TRUE`, wenn dieses Privilege die Lizenz seiner Duty bestimmt. |
+| `ENTRYPOINT_COUNT` | Anzahl der Entry Points im Privilege. |
+| `DRIVER_ENTRYPOINTS` | Die Entry Points, die `PRIVILEGE_SKU` auslösen. |
+| `LICENSE_STATUS` | Lizenzstatus der Entry Points, siehe `EntryPointDrivers`. |
+
+Ein Privilege, das in mehreren Duties vorkommt, steht einmal pro Duty in der
+Tabelle.
+
+**So liest man es:** In `SalesOrderMaintain` stehen zwei Privileges. Nur
+`SalesTableMaintain` hat `DRIVES_DUTY = TRUE`. Es ist der Grund, warum die
+Duty Supply Chain Management braucht. `SalesInvoicePost` bräuchte allein nur
+Finance.
+
+```{r privilege-abfragen, eval=FALSE}
+# Warum braucht diese Duty ihre Lizenz?
+analysis$PrivilegeDrivers |>
+  dplyr::filter(DUTYIDENTIFIER == "SalesOrderMaintain", DRIVES_DUTY)
+
+# Privileges ohne Lizenzinformation
+analysis$PrivilegeDrivers |> dplyr::filter(is.na(PRIVILEGE_SKU))
+```
+
+### `EntryPointDrivers` – die vollständige Ursachentabelle
+
+Dies ist die Grundlage aller anderen Ursachen-Tabellen. Sie enthält jeden
+Entry Point der Rolle, auch die nicht lizenzrelevanten. Gezeigt ist eine
+Auswahl der 18 Spalten:
+
+| PRIVILEGEIDENTIFIER | ENTRYPOINT | ENTRYPOINTTYPE | MEASURABLE | LICENSE_STATUS | MIN_SKU | DRIVES_DUTY |
+|---|---|---|---|---|---|---|
+| SalesTableMaintain | SALESTABLELISTPAGE | Menu item display | TRUE | LICENSED | Supply Chain Management | TRUE |
+| SalesInvoicePost | SALESFORMLETTER_INVOICE | Menu item action | FALSE | LICENSED | Finance | FALSE |
+| CustInvoiceServiceInvoke | CUSTINVOICESERVICE | Service operation | FALSE | LICENSED | Finance | TRUE |
+| RetailStoreTableMaintain | RETAILSTORETABLE | Menu item display | TRUE | LICENSED | Commerce | TRUE |
+| CustTableView | CUSTTABLELISTPAGE | Menu item display | TRUE | LICENSED | Team Members | TRUE |
+| WIBUAuftragZusatzView | WIBUAuftragZusatzForm | Menu item display | TRUE | UNKNOWN_PRIVILEGE | NA | FALSE |
+
+| Spalte | Bedeutung |
+|---|---|
+| `ROLEIDENTIFIER`, `DUTYIDENTIFIER`, `DUTYNAME`, `PRIVILEGEIDENTIFIER`, `PRIVILEGENAME` | Wo der Entry Point in der Rolle hängt. |
+| `ENTRYPOINT` | AOT-Name des Entry Points. |
+| `ENTRYPOINTTYPE` | Ressourcentyp aus `UserSecGovRelatedObjects`. |
+| `MEASURABLE` | `TRUE`, wenn die Telemetrie den Aufruf sieht. |
+| `ACCESSLEVEL` | 1 = Lesen, 2 = Schreiben. |
+| `LICENSE_STATUS` | Siehe unten. |
+| `MIN_SKU`, `MIN_PRIORITY`, `SKU_GROUP` | Mindestlizenz des Entry Points. |
+| `IS_BASE_LICENSE` | `TRUE`, wenn `MIN_SKU` eine Base-Lizenz ist. |
+| `COVERING_SKUS` | Alle Lizenzen, die den Entry Point abdecken, günstigste zuerst. |
+| `PRIVILEGE_SKU`, `DUTY_SKU` | Die nach oben weitergegebene Lizenz. |
+| `DRIVES_DUTY` | `TRUE`, wenn dieser Entry Point die Lizenz der Duty bestimmt. |
+
+Die Schreibweise in `ENTRYPOINT` folgt der Quelle: Namen aus der Lizenz-View
+stehen in Großbuchstaben, Namen, die nur in der Rolle vorkommen, in der
+Schreibweise der Rolle. Der Abgleich untereinander und mit der Telemetrie
+beachtet die Groß- und Kleinschreibung nicht.
+
+**Die vier Werte von `LICENSE_STATUS`:**
+
+| Wert | Bedeutung | Was tun |
+|---|---|---|
+| `LICENSED` | Mindestens eine Lizenz deckt den Entry Point ab. | Nichts. |
+| `NOT_LISTED` | Der Entry Point fehlt in der Lizenz-View, andere Entry Points desselben Privilege stehen dort. | Nichts; er gilt als nicht lizenzrelevant. |
+| `NOT_ENTITLED` | Der Entry Point steht in der Lizenz-View, aber keine Lizenz deckt ihn ab. | Von Hand bewerten. |
+| `UNKNOWN_PRIVILEGE` | Das ganze Privilege fehlt in der Lizenz-View. Typisch für Eigenentwicklungen. | Von Hand bewerten. |
+
+**So liest man es:** Für `CUSTTABLELISTPAGE` steht in `COVERING_SKUS`:
+`Team Members | Operations - Activity | Commerce | Finance | Supply Chain Management`.
+Fünf Lizenzen decken die Debitorenliste ab, die günstigste ist Team Members.
+
+```{r entrypoint-abfragen, eval=FALSE}
+# Alle Entry Points, die Commerce auslösen
+analysis$EntryPointDrivers |> dplyr::filter(MIN_SKU == "Commerce")
+
+# Verteilung des Lizenzstatus
+analysis$EntryPointDrivers |> dplyr::count(LICENSE_STATUS)
+
+# Welche Ressourcentypen gelten als messbar?
+analysis$EntryPointDrivers |> dplyr::count(ENTRYPOINTTYPE, MEASURABLE)
+```
+
+### `UserDutyUsage` – wer nutzt welche Duty?
+
+Eine Zeile pro Benutzer und Duty. Gezeigt sind anna und bernd:
+
+| USERID | DUTYIDENTIFIER | DUTY_SKU | MEASURABLE_COUNT | UNMEASURABLE_LICENSES | TOUCHES | LAST_SEEN | EVIDENCE |
+|---|---|---|---:|---|---:|---|---|
+| anna | (direkt) | Finance | 0 | Finance | 0 | NA | NOT_MEASURABLE |
+| anna | CustCustomerMasterInquire | Team Members | 1 | | 35 | 2026-09-27 | USED |
+| anna | RetailStoreMaintain | Commerce | 1 | | 0 | NA | NOT_OBSERVED |
+| anna | SalesOrderMaintain | Supply Chain Management | 1 | Finance | 140 | 2026-09-28 | USED |
+| anna | WIBUAuftragZusatz | NA | 1 | | 0 | NA | NOT_OBSERVED |
+| bernd | (direkt) | Finance | 0 | Finance | 0 | NA | NOT_MEASURABLE |
+| bernd | CustCustomerMasterInquire | Team Members | 1 | | 12 | 2026-09-15 | USED |
+| bernd | RetailStoreMaintain | Commerce | 1 | | 0 | NA | NOT_OBSERVED |
+| bernd | SalesOrderMaintain | Supply Chain Management | 1 | Finance | 0 | NA | NOT_MEASURABLE |
+| bernd | WIBUAuftragZusatz | NA | 1 | | 0 | NA | NOT_OBSERVED |
+
+| Spalte | Bedeutung |
+|---|---|
+| `DUTY_SKU` | Teuerste Mindestlizenz der Duty. |
+| `ENTRYPOINT_COUNT` | Anzahl der Entry Points der Duty. |
+| `MEASURABLE_COUNT` | Davon messbar. |
+| `UNMEASURABLE_LICENSES` | Lizenzteile der Duty ohne messbares Formular. |
+| `TOUCHES` | Aufrufe aller Entry Points der Duty durch diesen Benutzer. |
+| `DRIVER_TOUCHES` | Aufrufe nur der Entry Points, die die Lizenz der Duty bestimmen. |
+| `LAST_SEEN` | Datum des letzten Aufrufs. |
+| `EVIDENCE` | Siehe "Vier Begriffe", Stufe 1. |
+
+**So liest man es:**
+
+- **anna, `SalesOrderMaintain`: `USED`.** 140 Aufrufe. Sie braucht die Duty.
+- **anna, `RetailStoreMaintain`: `NOT_OBSERVED`.** Das Formular ist messbar,
+  und anna hat es nie geöffnet. Ein Hinweis, dass sie die Duty nicht braucht.
+- **bernd, `SalesOrderMaintain`: `NOT_MEASURABLE`.** bernd hat die
+  Auftragsliste nie geöffnet. Trotzdem steht hier nicht `NOT_OBSERVED`, weil
+  die Duty auch das Buchen von Rechnungen enthält, das unsichtbar ist. Die
+  Spalte `UNMEASURABLE_LICENSES` nennt den Grund: `Finance`.
+- **`(direkt)`: `NOT_MEASURABLE` bei beiden.** Das Privilege berechtigt nur
+  eine Service Operation. `MEASURABLE_COUNT` ist 0.
+- **dirk** (nicht gezeigt) hat in allen fünf Zeilen `NO_USER_TELEMETRY`.
+
+**Ein Sonderfall:** `TOUCHES` größer 0 bei `DRIVER_TOUCHES` gleich 0 bedeutet:
+Der Benutzer nutzt die Duty, aber nicht den Teil, der die teure Lizenz
+auslöst. Das ist ein Hinweis für einen zweiten Schritt, in dem die Duty
+selbst verkleinert wird.
+
+```{r usage-abfragen, eval=FALSE}
+# Wer nutzt eine bestimmte Duty?
+analysis$UserDutyUsage |>
+  dplyr::filter(DUTYIDENTIFIER == "RetailStoreMaintain", EVIDENCE == "USED")
+
+# Alle Duties eines Benutzers
+analysis$UserDutyUsage |> dplyr::filter(USERID == "bernd")
+```
+
+### `UserDecisions` – bei wem kann welche Lizenz entfallen?
+
+Eine Zeile pro Benutzer und Lizenz. Gezeigt ist eine Auswahl der 15 Spalten:
+
+| USERID | SKUNAME | DUTY_COUNT | USED_DUTIES | NOT_OBSERVED_DUTIES | REVIEW_DUTIES | DECISION | LICENSED_VIA_OTHER_ROLE | SAVES_LICENSE | SAVES_IF_CONFIRMED |
+|---|---|---:|---:|---:|---:|---|---|---|---|
+| anna | Supply Chain Management | 1 | 1 | 0 | 0 | KEEP | FALSE | FALSE | FALSE |
+| anna | Finance | 2 | 1 | 0 | 1 | KEEP | FALSE | FALSE | FALSE |
+| anna | Commerce | 1 | 0 | 1 | 0 | REMOVE_CANDIDATE | FALSE | TRUE | FALSE |
+| anna | Team Members | 1 | 1 | 0 | 0 | KEEP | FALSE | FALSE | FALSE |
+| bernd | Supply Chain Management | 1 | 0 | 0 | 1 | REVIEW | FALSE | FALSE | TRUE |
+| bernd | Finance | 2 | 0 | 0 | 2 | REVIEW | TRUE | FALSE | FALSE |
+| bernd | Commerce | 1 | 0 | 1 | 0 | REMOVE_CANDIDATE | FALSE | TRUE | FALSE |
+| bernd | Team Members | 1 | 1 | 0 | 0 | KEEP | FALSE | FALSE | FALSE |
+| clara | Supply Chain Management | 1 | 0 | 0 | 1 | REVIEW | FALSE | FALSE | TRUE |
+| clara | Finance | 2 | 0 | 0 | 2 | REVIEW | FALSE | FALSE | TRUE |
+| clara | Commerce | 1 | 1 | 0 | 0 | KEEP | FALSE | FALSE | FALSE |
+| clara | Team Members | 1 | 0 | 1 | 0 | REMOVE_CANDIDATE | FALSE | FALSE | FALSE |
+| dirk | Supply Chain Management | 1 | 0 | 0 | 1 | REVIEW | FALSE | FALSE | TRUE |
+| dirk | Finance | 2 | 0 | 0 | 2 | REVIEW | FALSE | FALSE | TRUE |
+| dirk | Commerce | 1 | 0 | 0 | 1 | REVIEW | FALSE | FALSE | TRUE |
+| dirk | Team Members | 1 | 0 | 0 | 1 | REVIEW | FALSE | FALSE | FALSE |
+
+| Spalte | Bedeutung |
+|---|---|
+| `SKUNAME`, `PRIORITY`, `IS_BASE_LICENSE` | Lizenz. |
+| `DUTY_COUNT` | Anzahl der Duties der Rolle, die diese Lizenz enthalten. |
+| `USED_DUTIES` | Davon `USED`. |
+| `NOT_OBSERVED_DUTIES` | Davon `NOT_OBSERVED`. |
+| `REVIEW_DUTIES` | Davon `NOT_MEASURABLE` oder `NO_USER_TELEMETRY`. |
+| `DUTY_TOUCHES` | Aufrufe in diesen Duties. Gezählt wird die ganze Duty. |
+| `LAST_SEEN` | Letzter Aufruf in diesen Duties. |
+| `DECISION` | `KEEP`, `REMOVE_CANDIDATE` oder `REVIEW`. |
+| `LICENSED_VIA_ROLE` | D365FO weist dem Benutzer die Lizenz heute über diese Rolle zu. |
+| `LICENSED_VIA_OTHER_ROLE` | Eine andere Rolle des Benutzers erfordert dieselbe Lizenz. |
+| `SAVES_LICENSE` | Die Lizenz gilt als eingespart (alle vier Bedingungen erfüllt). |
+| `SAVES_IF_CONFIRMED` | Wie `SAVES_LICENSE`, aber die Empfehlung steht noch auf `REVIEW`. |
+
+**So liest man es:**
+
+- **anna, Finance: `KEEP`.** Zwei Duties enthalten Finance. Eine davon
+  (`SalesOrderMaintain`) nutzt sie. Das genügt.
+- **anna, Commerce: `REMOVE_CANDIDATE`, `SAVES_LICENSE = TRUE`.** Die einzige
+  Duty mit Commerce hat sie nie geöffnet, und keine andere ihrer Rollen
+  braucht Commerce.
+- **bernd, Supply Chain Management: `REVIEW`.** Die einzige Duty mit dieser
+  Lizenz ist für ihn `NOT_MEASURABLE`. `SAVES_IF_CONFIRMED = TRUE`: Bestätigt
+  der Fachbereich, dass bernd keine Aufträge bearbeitet, entfällt die Lizenz.
+- **bernd, Finance: `REVIEW`, aber `SAVES_IF_CONFIRMED = FALSE`.**
+  `LICENSED_VIA_OTHER_ROLE` ist `TRUE`. Selbst wenn bernd Finance in dieser
+  Rolle nicht braucht, behält er die Lizenz über `LEDGERACCOUNTANT`.
+- **clara, Team Members: `REMOVE_CANDIDATE`, aber `SAVES_LICENSE = FALSE`.**
+  Team Members ist keine Base-Lizenz. Es wird keine Einsparung gezählt.
+- **dirk: überall `REVIEW`.** Ohne Telemetrie gibt es keine Aussage.
+
+Die Duty `WIBUAuftragZusatz` kommt in dieser Tabelle nicht vor, weil ihr keine
+Lizenz zugeordnet ist. Ihre Nutzung steht in `UserDutyUsage`.
+
+```{r decisions-abfragen, eval=FALSE}
+# Sichere Kandidaten
+analysis$UserDecisions |> dplyr::filter(SAVES_LICENSE)
+
+# Fälle für die Abstimmung mit dem Fachbereich
+analysis$UserDecisions |> dplyr::filter(SAVES_IF_CONFIRMED)
+```
+
+### `UserSummary` – ein Benutzer auf einen Blick
+
+| USERID | SKUS_BEFORE | SKUS_AFTER | SAVED_SKUS | BASE_LICENSES_BEFORE | BASE_LICENSES_AFTER |
+|---|---|---|---|---:|---:|
+| anna | Commerce \| Finance \| Supply Chain Management | Finance \| Supply Chain Management | Commerce | 3 | 2 |
+| bernd | Commerce \| Finance \| Supply Chain Management | Finance \| Supply Chain Management | Commerce | 3 | 2 |
+| clara | Commerce \| Finance \| Supply Chain Management | Commerce \| Finance \| Supply Chain Management | | 3 | 3 |
+| dirk | Commerce \| Finance \| Supply Chain Management | Commerce \| Finance \| Supply Chain Management | | 3 | 3 |
+
+Dazu drei Spalten mit den Empfehlungen:
+
+| USERID | KEEP_SKUS | REVIEW_SKUS | REMOVE_CANDIDATE_SKUS |
+|---|---|---|---|
+| anna | Finance \| Supply Chain Management \| Team Members | | Commerce |
+| bernd | Team Members | Finance \| Supply Chain Management | Commerce |
+| clara | Commerce | Finance \| Supply Chain Management | Team Members |
+| dirk | | Commerce \| Finance \| Supply Chain Management \| Team Members | |
+
+| Spalte | Bedeutung | Quelle |
+|---|---|---|
+| `SKUS_BEFORE` | Lizenzen des Benutzers heute, über alle seine Rollen. | D365FO |
+| `SKUS_AFTER` | Lizenzen nach Wegfall der eingesparten. | Schätzung |
+| `SAVED_SKUS` | Die eingesparten Lizenzen. | Auswertung |
+| `BASE_LICENSES_BEFORE`, `BASE_LICENSES_AFTER` | Anzahl der Base-Lizenzen vorher und nachher. | |
+| `KEEP_SKUS`, `REVIEW_SKUS`, `REMOVE_CANDIDATE_SKUS` | Die Lizenzen der Rolle, sortiert nach Empfehlung. | Auswertung |
+
+**So liest man es:** anna hat heute drei Base-Lizenzen und käme mit zwei aus.
+clara und dirk behalten alle drei, solange ihre `REVIEW`-Fälle offen sind.
+
+Die Spalten `SKUS_BEFORE` und `SKUS_AFTER` zeigen, was D365FO ausweist. Dort
+fehlt Team Members, weil Base-Lizenzen es einschließen. In den drei
+Empfehlungsspalten steht Team Members dagegen, weil die Rolle selbst Entry
+Points mit dieser Mindestlizenz enthält.
+
+### `Savings` – die Gesamtzahl
+
+| SKUNAME | USERS_BEFORE | USERS_SAVED | USERS_AFTER | USERS_REVIEW |
+|---|---:|---:|---:|---:|
+| Commerce | 4 | 2 | 2 | 1 |
+| Finance | 4 | 0 | 4 | 2 |
+| Supply Chain Management | 4 | 0 | 4 | 3 |
+
+| Spalte | Bedeutung |
+|---|---|
+| `USERS_BEFORE` | Benutzer der Rolle, die die Lizenz heute brauchen. |
+| `USERS_SAVED` | Benutzer, bei denen die Lizenz als eingespart gilt (`SAVES_LICENSE`). |
+| `USERS_AFTER` | `USERS_BEFORE` minus `USERS_SAVED`. |
+| `USERS_REVIEW` | Benutzer, bei denen die Lizenz zusätzlich entfiele, wenn der Fachbereich es bestätigt (`SAVES_IF_CONFIRMED`). |
+
+**So liest man es:**
+
+- **Commerce:** Vier Benutzer brauchen heute Commerce. Bei zwei (anna, bernd)
+  kann die Lizenz entfallen. Bei einem weiteren (dirk) ist es möglich, aber
+  offen.
+- **Supply Chain Management:** Keine sichere Einsparung, aber drei offene
+  Fälle. Hier lohnt die Abstimmung mit dem Fachbereich am meisten.
+
+Die Einsparung liegt also zwischen `USERS_SAVED` (sicher belegt) und
+`USERS_SAVED + USERS_REVIEW` (Obergrenze).
+
+Die Tabelle enthält nur Base-Lizenzen und keine Preise. Für einen Betrag die
+Spalte `USERS_SAVED` mit dem Lizenzpreis multiplizieren.
+
+### `Legend` – Bedeutung der Statuswerte
+
+Eine Nachschlagetabelle mit zwei Spalten, `BEGRIFF` und `BEDEUTUNG`. Sie steht
+als letztes Blatt in der Excel-Datei, damit jeder Leser der Datei die Werte
+`USED`, `REVIEW` und die übrigen ohne dieses Dokument versteht.
+
+---
+
+## Ein Benutzer von Anfang bis Ende: bernd
+
+So entsteht aus den einzelnen Beobachtungen die Zeile in `Savings`.
+
+**1. Telemetrie.** bernd hat genau ein Formular geöffnet: die Debitorenliste,
+12-mal.
+
+**2. `UserDutyUsage`.** Daraus folgt pro Duty:
+
+| Duty | Evidenz | Grund |
+|---|---|---|
+| `CustCustomerMasterInquire` | `USED` | 12 Aufrufe. |
+| `RetailStoreMaintain` | `NOT_OBSERVED` | Messbar, nie geöffnet. |
+| `SalesOrderMaintain` | `NOT_MEASURABLE` | Nie geöffnet, aber der Finance-Teil ist unsichtbar. |
+| `(direkt)` | `NOT_MEASURABLE` | Nur eine Service Operation. |
+| `WIBUAuftragZusatz` | `NOT_OBSERVED` | Messbar, nie geöffnet. |
+
+**3. `UserDecisions`.** Pro Lizenz werden die Duties betrachtet, die sie
+enthalten:
+
+| Lizenz | Enthalten in | Empfehlung |
+|---|---|---|
+| Commerce | `RetailStoreMaintain` (`NOT_OBSERVED`) | `REMOVE_CANDIDATE` |
+| Supply Chain Management | `SalesOrderMaintain` (`NOT_MEASURABLE`) | `REVIEW` |
+| Finance | `SalesOrderMaintain` und `(direkt)`, beide `NOT_MEASURABLE` | `REVIEW` |
+| Team Members | `CustCustomerMasterInquire` (`USED`) | `KEEP` |
+
+**4. Einsparung.**
+
+- Commerce: Base-Lizenz, über diese Rolle zugewiesen, keine andere Rolle
+  braucht sie. **Eingespart.**
+- Supply Chain Management: noch `REVIEW`. Zählt in `USERS_REVIEW`.
+- Finance: Die Rolle `LEDGERACCOUNTANT` erfordert Finance ebenfalls. Zählt
+  nirgends, auch nicht in `USERS_REVIEW`.
+
+**5. `UserSummary`.** bernd: drei Base-Lizenzen vorher, zwei nachher.
+
+**6. `Savings`.** bernd ist einer der zwei Benutzer in `USERS_SAVED` bei
+Commerce und einer der drei in `USERS_REVIEW` bei Supply Chain Management.
+
+---
+
+## Vom Ergebnis zur Entscheidung
+
+| Empfehlung | Bedeutung | Nächster Schritt |
+|---|---|---|
+| `KEEP` | Der Benutzer nutzt mindestens eine Duty mit dieser Lizenz. | Nichts. |
+| `REMOVE_CANDIDATE` | Keine Nutzung beobachtet, und alles war messbar. | Mit dem Fachbereich bestätigen, dann umsetzen. |
+| `REVIEW` | Die Telemetrie kann nicht entscheiden. | Den Fachbereich fragen, ob der Benutzer die Tätigkeit ausführt. |
+
+Drei Dinge sind dabei zu beachten:
+
+**Ein Kandidat ist kein Beschluss.** `NOT_OBSERVED` heißt: im
+Auswertungszeitraum nicht gesehen. Tätigkeiten, die nur zum Jahresabschluss
+oder in Vertretung anfallen, erscheinen als ungenutzt. Deshalb jeden
+Kandidaten vor der Umsetzung bestätigen lassen.
+
+**Die Einsparung setzt die Rollenteilung voraus.** Die Auswertung ändert
+nichts an der Rolle. Entfernt man eine Duty aus der bestehenden Rolle,
+verlieren alle Benutzer den Zugriff, auch die, die ihn brauchen. Der Weg ist
+deshalb: die Rolle in Teilrollen aufteilen und jedem Benutzer nur die
+Teilrollen geben, die er braucht. Das beschreibt
+`Playbook_Rollenteilung_Lizenzoptimierung.Rmd`. Dessen Schritt 6b übernimmt
+die Benutzerlisten direkt aus `analysis$UserDutyUsage`.
+
+**Nach der Umsetzung nachmessen.** Die Spalten `SKUS_AFTER` und `USERS_AFTER`
+sind eine Schätzung. Maßgeblich ist, was D365FO nach der Umstellung ausweist:
+
+```{r nachmessen, eval=FALSE}
+get_user_licenses_by_role(cnn, user_ids = c("anna", "bernd"))
+```
+
+---
+
+## Prüfliste für den ersten Lauf mit echten Daten
+
+Die Funktionen sind bisher nur mit erfundenen Daten getestet. Vor der ersten
+Entscheidung auf echten Daten diese fünf Punkte prüfen:
+
+```{r pruefliste, eval=FALSE}
+# 1. Stimmt die Berechnung mit D365FO überein? Erwartet: nur "match"
+analysis$Reconciliation
+
+# 2. Wurden die Lizenzen den Privileges zugeordnet?
+#    Erwartet: überwiegend LICENSED und NOT_LISTED.
+#    Fast alles UNKNOWN_PRIVILEGE bedeutet: die Zuordnung hat nicht funktioniert.
+analysis$EntryPointDrivers |> dplyr::count(LICENSE_STATUS)
+
+# 3. Werden Formulare als messbar erkannt?
+#    Erwartet: der Typ der Formulare steht auf MEASURABLE = TRUE.
+analysis$EntryPointDrivers |> dplyr::count(ENTRYPOINTTYPE, MEASURABLE)
+
+# 4. Werden Base-Lizenzen erkannt?
+#    Erwartet: Commerce, Finance, SCM auf TRUE; Team Members auf FALSE.
+analysis$EntryPointDrivers |> dplyr::distinct(MIN_SKU, SKU_GROUP, IS_BASE_LICENSE)
+
+# 5. Passen Benutzer und Formularnamen der Telemetrie?
+analysis$DataQuality
+```
+
+| Punkt | Wenn das Ergebnis nicht passt |
+|---|---|
+| 1 | Die abweichende Lizenz in `RoleLicenses` und `EntryPointDrivers` nachverfolgen. |
+| 2 | Die Schreibweise der Privilege-Identifier in `UserSecGovRelatedObjects` und in der Lizenz-View vergleichen. |
+| 3 | `measurable_type_pattern` auf den tatsächlichen Typnamen der Formulare setzen. |
+| 4 | `base_group_pattern` auf die tatsächlichen Gruppennamen setzen. |
+| 5 | Siehe Warnzeichen im Abschnitt `DataQuality`. |
+
+---
+
+## Grenzen
+
+- **Nur Formulare sind sichtbar.** Aktionen, Berichte, Services, Data Entities
+  und Batch-Läufe erscheinen nie in der Telemetrie.
+- **Nur der Auswertungszeitraum zählt.** Seltene und saisonale Tätigkeiten
+  können fehlen.
+- **Teilweise messbare Lizenzteile.** Hat ein Lizenzteil ein Formular und
+  mehrere Aktionen, genügt das ungeöffnete Formular für `NOT_OBSERVED`. Die
+  Spalten `ENTRYPOINT_COUNT` und `MEASURABLE_COUNT` zeigen, wie viel davon
+  tatsächlich messbar war.
+- **Ein Modell, nicht die Lizenzberechnung von Microsoft.** Die Auswertung
+  bildet die Berechnung nach. `Reconciliation` zeigt, ob sie für die Rolle
+  zutrifft.
+- **Keine Preise.** Gezählt werden Lizenzen, nicht Beträge.
+- **Eine Rolle pro Aufruf.**
+- **Laufzeit.** Auf echten Daten bisher nicht gemessen. Schritt 2 liest alle
+  Objekte der Rolle; bei großen Rollen kann das dauern.
+
+---
+
+## Fehlerbehebung
+
+| Beobachtung | Wahrscheinliche Ursache | Abhilfe |
+|---|---|---|
+| Jede Empfehlung lautet `REVIEW`. | `usage` fehlt oder ist leer; oder die Warnung "Kein messbarer Entry Point" ist erschienen. | `attr(usage, "status")` und `DataQuality` prüfen. |
+| Jede Evidenz lautet `NO_USER_TELEMETRY`. | Die Benutzerkennungen passen nicht, oder die Formularnamen passen nicht. | `unique(usage$user_Id)` mit den Benutzern der Rolle vergleichen. |
+| Fast jede Evidenz lautet `NOT_MEASURABLE`. | Formulare werden nicht als messbar erkannt. | Prüfliste, Punkt 3. |
+| `DUTY_SKU` ist überall `NA`. | Die Lizenzen wurden den Privileges nicht zugeordnet. | Prüfliste, Punkt 2. |
+| `Savings` fehlt in der Excel-Datei. | Die Tabelle ist leer: keine Base-Lizenz bei den ausgewerteten Benutzern. | `analysis$UserSummary` ansehen. |
+| `USERS_SAVED` ist 0, obwohl es `REMOVE_CANDIDATE` gibt. | Eine andere Rolle erfordert die Lizenz, oder D365FO weist sie nicht über diese Rolle zu. | In `UserDecisions` die Spalten `LICENSED_VIA_ROLE` und `LICENSED_VIA_OTHER_ROLE` ansehen. |
+
+---
+
+## Funktionsübersicht
+
+| Funktion | Aufgabe |
+|---|---|
+| `analyze_role_license_decision()` | Die vollständige Auswertung. Ruft alle folgenden auf. |
+| `export_role_license_decision()` | Schreibt das Ergebnis nach Excel. |
+| `get_role_license_drivers()` | Lädt die Rolle und liefert `EntryPointDrivers`. |
+| `build_role_license_drivers()` | Dieselbe Berechnung auf bereits geladenen Tabellen, ohne Datenbank. |
+| `summarize_duty_license_drivers()` | Verdichtet auf `DutyDrivers`. |
+| `summarize_privilege_license_drivers()` | Verdichtet auf `PrivilegeDrivers`. |
+| `summarize_role_license_skus()` | Verdichtet auf `RoleLicenses`. |
+| `compare_role_license_skus()` | Liefert `Reconciliation`. |
+| `analyze_user_duty_usage()` | Liefert `UserDutyUsage`. |
+| `recommend_user_license_target()` | Liefert `UserDecisions`, `UserSummary` und `Savings`. |
+
+Jede Tabelle lässt sich auch einzeln erzeugen, zum Beispiel wenn nur die
+Ursachen interessieren und keine Benutzer:
+
+```{r einzeln, eval=FALSE}
+drivers <- get_role_license_drivers(cnn, rolle)
+
+summarize_role_license_skus(drivers)           # Lizenzen der Rolle
+summarize_duty_license_drivers(drivers)        # Lizenz pro Duty
+summarize_privilege_license_drivers(drivers)   # Lizenz pro Privilege
+```
