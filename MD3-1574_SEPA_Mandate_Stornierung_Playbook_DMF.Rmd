@@ -1,0 +1,766 @@
+---
+title: "MD3-1574 SEPA-Direkteinzugsmandate stornieren – Playbook (DMF-Import)"
+author: "Cedric Kameni"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+# Zielsetzung
+
+Für die Debitoren bestimmter **Unternehmensketten** sind die
+SEPA-Direkteinzugsmandate nicht mehr gültig (Anlass MD3-1574: neuer
+Rahmenvertrag aus 2025, Mandant **0900**). Die Mandate sollen **storniert** und
+die **Standardmandats-ID** am Debitor **entfernt** werden.
+
+Manuell müsste jeder Debitor einzeln angefasst werden (Standardmandats-ID
+entfernen, danach jedes Mandat stornieren). Dieses Playbook bereitet die
+Massenänderung aus DMF-Exporten auf und erzeugt Importdateien, Kontrollliste,
+Baseline und Testdateien. Es ist über die Parameter im Abschnitt *Einrichtung*
+für andere Unternehmensketten, Stati und Mandanten wiederverwendbar.
+
+## Abgrenzung zu MD3-808
+
+| | MD3-808 | MD3-1574 |
+|---|---|---|
+| Welches Mandat je Debitor | musste über die Standardmandats-ID bestimmt werden | **alle** Mandate – keine Auswahl nötig |
+| `STATUS` | nur gelesen | wird **geschrieben** (`Canceled`) |
+| Standardmandats-ID | nur gelesen | muss **geleert** werden |
+| Bankkonten, neue Mandate | Kern der Aufgabe | nicht Teil der Aufgabe |
+
+## Regeln
+
+1. **Population:** Debitoren des exportierten Mandanten mit
+   `COMPANYCHAIN` ∈ `COMPANY_CHAINS`.
+2. **Stornieren:** alle Mandate dieser Debitoren mit `STATUS` ∈
+   `STATUS_TO_CANCEL`. Sie erhalten `STATUS = STATUS_CANCELED` und
+   `CANCELLATIONDATE = CANCELLATION_DATE`.
+3. **Nicht anfassen:** bereits stornierte Mandate und Mandate mit einem Status,
+   der nicht in `STATUS_TO_CANCEL` steht. Sie erscheinen nur in der
+   Kontrollliste.
+4. **Standardmandats-ID leeren:** bei **jedem** Debitor der Population, bei dem
+   sie gesetzt ist – auch wenn alle seine Mandate bereits storniert sind.
+5. **Zahlungsmethode / Bankkonto am Debitor:** je Feld genau ein Schalter –
+   Wert lassen, wie er ist, oder setzen. Standard ist **unverändert**
+   (`NEW_PAYMENT_METHOD = NA`, `CLEAR_PAYMENT_BANKACCOUNT = FALSE`). Wird
+   `NEW_PAYMENT_METHOD` auf einen Wert gesetzt, erhalten **alle** Debitoren der
+   Population diese Zahlungsmethode. Bei `CLEAR_PAYMENT_BANKACCOUNT = TRUE`
+   wird das Bankkonto bei allen Debitoren der Population geleert.
+6. **Importreihenfolge:** erst Standardmandats-ID leeren, dann Mandate
+   stornieren, zuletzt (optional) Zahlungsdaten.
+
+## Datenquelle
+
+Das Playbook lädt **keine** Datenbank, sondern Exporte (`.xlsx`) aus `path_in`.
+Alle Exporte werden im Zielmandanten gezogen.
+
+| Datei | Quelle | Benötigte Spalten |
+|-------|--------|-------------------|
+| `Customers V3.xlsx` | DMF-Export *Customers V3* | `CUSTOMERACCOUNT`, `ORGANIZATIONNAME`, `COMPANYCHAIN`, `PAYMENTMETHOD`, `PAYMENTBANKACCOUNT` |
+| `Customer direct debit mandates.xlsx` | DMF-Export *Customer direct debit mandates*, alle Spalten, **ohne Filter** | `MANDATEID`, `CUSTOMERACCOUNT`, `CUSTOMERBANKACCOUNT`, `CREDITORBANKACCOUNT`, `STATUS`, `USAGECOUNT` |
+| `Custtable_Export_DefaultMandate.xlsx` | Export der Standardmandats-ID (wie in MD3-808) | `Account`, `DefaultMandateID` |
+
+> **Hinweis:** Die Standardmandats-ID ist in *Customers V3* nicht enthalten und
+> es gibt keine Entity-Erweiterung. Sie kommt deshalb aus dem separaten Export.
+> Die Mandate werden ungefiltert exportiert, weil die Entität keine
+> Unternehmenskette kennt – die Einschränkung erfolgt hier per Join.
+
+---
+
+# Schritt 0 — Machbarkeitstest in der Testumgebung
+
+Zwei Punkte sind **nicht verifiziert** und müssen vor allem anderen mit je
+einem Debitor in der Testumgebung geprüft werden. Die passenden
+Einzel-Testdateien erzeugt *Schritt 6* (Testfälle `A` und `B`).
+
+1. **Status-Import (Testfall A):** Mandat eines Debitors **ohne**
+   Standardmandats-ID mit `STATUS = Canceled` und `CANCELLATIONDATE` über
+   *Customer direct debit mandates* importieren. Wird der Status gesetzt und
+   kommt das Datum korrekt an?
+2. **Standardmandat (Testfall B):** dasselbe für einen Debitor, dessen Mandat
+   die Standardmandats-ID ist. Mögliche Ergebnisse: Import schlägt fehl, die
+   Standardmandats-ID bleibt auf dem stornierten Mandat stehen, oder sie wird
+   automatisch geleert.
+
+Aus Testfall B ergibt sich der Weg für das Leeren der Standardmandats-ID:
+
+| Ergebnis | Weg |
+|----------|-----|
+| Storno-Import leert die Standardmandats-ID automatisch | kein eigener Schritt nötig |
+| Import schlägt fehl oder ID bleibt stehen | Liste `standardmandat_leeren` abarbeiten: per Custom-X++-Skript auf `CustTable.DirectDebitMandate`, per Entity-Erweiterung von *Customers V3*, oder manuell |
+
+> **DMF-Einstellung:** Beim Import leerer Werte darf in der Zuordnung der
+> Entität die Option *Leere Werte ignorieren* nicht gesetzt sein.
+
+---
+
+# Einrichtung
+
+```{r setup, include=FALSE}
+# warning = TRUE: Warnungen der Pruefungen muessen im HTML sichtbar bleiben
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE)
+library(dplyr)
+library(readxl)
+library(writexl)
+```
+
+```{r parameter}
+TICKET       <- "MD3-1574"
+LEGAL_ENTITY <- "0900"
+ENVIRONMENT  <- "INT"                  # Unterordner je Umgebung: "INT" oder "PROD"
+
+# Population: Unternehmensketten (als Text)
+COMPANY_CHAINS <- c("112", "110")
+
+# Mandate mit diesen Stati werden storniert
+STATUS_TO_CANCEL  <- c("New", "Active", "Incomplete", "Expired")
+STATUS_CANCELED   <- "Canceled"        # Schreibweise exakt wie im DMF-Export
+CANCELLATION_DATE <- Sys.Date()        # oder fester Stichtag: as.Date("2025-12-31")
+
+# Zahlungsdaten am Debitor - je Feld: Wert lassen, wie er ist, oder setzen.
+# Standard: Werte in der Tabelle NICHT aendern.
+#   NEW_PAYMENT_METHOD:        NA    = Zahlungsmethode bleibt, wie sie ist
+#                              "..." = bei allen Debitoren der Population setzen,
+#                                      z. B. "SEPA ÜW"
+#   CLEAR_PAYMENT_BANKACCOUNT: FALSE = Bankkonto bleibt, wie es ist
+#                              TRUE  = Bankkonto am Debitor leeren
+NEW_PAYMENT_METHOD        <- NA_character_
+CLEAR_PAYMENT_BANKACCOUNT <- FALSE
+
+# Testdateien: Anzahl Debitoren je Testfall + zusaetzlich gewuenschte Debitoren
+TEST_CUSTOMERS_PER_CASE <- 1
+TEST_CUSTOMERS          <- character(0)
+
+stopifnot(
+  "STATUS_CANCELED darf nicht in STATUS_TO_CANCEL stehen" =
+    !STATUS_CANCELED %in% STATUS_TO_CANCEL,
+  "CANCELLATION_DATE muss ein gueltiges Datum sein" =
+    inherits(CANCELLATION_DATE, "Date") && !is.na(CANCELLATION_DATE)
+)
+```
+
+```{r paths}
+base_path <- "C:/Users/CKAM/Documents/RProjects/Data/MD3-1574 SEPA Mandate Stornierung/"
+
+# Eingabe: Exporte VOR dem Import
+path_in   <- paste0(base_path, ENVIRONMENT, "/")
+# Eingabe: Exporte NACH dem Import (nur fuer die Nachkontrolle, Schritt 7)
+path_post <- paste0(path_in, "Nachkontrolle/")
+# Ausgabe: Import-, Kontroll- und Testdateien
+path_out  <- paste0(path_in, "Import/")
+dir.create(path_out, showWarnings = FALSE, recursive = TRUE)
+
+FILE_CUSTOMERS       <- "Customers V3.xlsx"
+FILE_MANDATES        <- "Customer direct debit mandates.xlsx"
+FILE_DEFAULT_MANDATE <- "Custtable_Export_DefaultMandate.xlsx"
+
+# Standardmandat-Export: Zielname = Spaltenname in der Quelldatei
+DEFAULT_MANDATE_COLS <- c(
+  CUSTOMERACCOUNT  = "Account",
+  DEFAULTMANDATEID = "DefaultMandateID"
+)
+
+DATE_COLS <- c("SIGNATUREDATE", "EXPIRATIONDATE", "CANCELLATIONDATE")
+
+out_file <- function(name) {
+  paste0(path_out, TICKET, "_", LEGAL_ENTITY, "_", ENVIRONMENT, "_", name)
+}
+```
+
+---
+
+# Schritt 1 — Daten laden
+
+```{r reader}
+# Leerstring / Whitespace -> NA
+blank_to_na <- function(x) {
+  x <- trimws(as.character(x))
+  x[x == ""] <- NA_character_
+  x
+}
+
+# Liest einen Export (.xlsx) vollstaendig als Text. Spaltennamen werden in
+# Grossbuchstaben umgesetzt, Leerwerte zu NA. Bricht ab, wenn die Datei oder
+# eine Pflichtspalte fehlt.
+read_dmf_export <- function(dir, file_name, required_cols) {
+  f <- paste0(dir, file_name)
+  if (!file.exists(f))
+    stop("Datei nicht gefunden: ", f)
+
+  df <- readxl::read_excel(f, col_types = "text")
+  names(df) <- toupper(trimws(names(df)))
+
+  missing_cols <- setdiff(required_cols, names(df))
+  if (length(missing_cols) > 0)
+    stop("Pflichtspalten fehlen in '", file_name, "': ",
+         paste(missing_cols, collapse = ", "))
+
+  df |> dplyr::mutate(dplyr::across(dplyr::everything(), blank_to_na))
+}
+
+# Standardmandat-Export -> CUSTOMERACCOUNT, DEFAULTMANDATEID
+read_default_mandates <- function(dir) {
+  read_dmf_export(dir, FILE_DEFAULT_MANDATE, toupper(DEFAULT_MANDATE_COLS)) |>
+    dplyr::select(dplyr::all_of(toupper(DEFAULT_MANDATE_COLS))) |>
+    dplyr::filter(!is.na(CUSTOMERACCOUNT))
+}
+
+# Excel-Datum, das als Text gelesen wurde (Seriennummer, ISO- oder deutsches
+# Datum), in ein Date umwandeln. Nicht lesbare Werte werden NA.
+excel_to_date <- function(x) {
+  x      <- blank_to_na(x)
+  serial <- suppressWarnings(as.numeric(x))
+  iso    <- substr(x, 1, 10)
+
+  out <- dplyr::coalesce(
+    as.Date(iso, format = "%Y-%m-%d"),
+    as.Date(iso, format = "%d.%m.%Y")
+  )
+  # Seriennummern nur im plausiblen Bereich (1900 bis ca. 2170) umrechnen
+  is_serial <- !is.na(serial) & serial >= 1 & serial < 100000
+  out[is_serial] <- as.Date(serial[is_serial], origin = "1899-12-30")
+  out
+}
+
+# Bricht ab, wenn der Schluessel leer oder nicht eindeutig ist
+assert_key <- function(df, key, label) {
+  if (anyNA(df[[key]]))
+    stop(label, ": ", key, " ist in ", sum(is.na(df[[key]])), " Zeile(n) leer")
+
+  dupes <- unique(df[[key]][duplicated(df[[key]])])
+  if (length(dupes) > 0)
+    stop(label, ": ", key, " nicht eindeutig (", length(dupes),
+         " Faelle, z. B. ", dupes[1], ")")
+}
+```
+
+```{r load}
+cust_raw <- read_dmf_export(
+  path_in, FILE_CUSTOMERS,
+  c("CUSTOMERACCOUNT", "ORGANIZATIONNAME", "COMPANYCHAIN",
+    "PAYMENTMETHOD", "PAYMENTBANKACCOUNT")
+)
+
+mand_raw <- read_dmf_export(
+  path_in, FILE_MANDATES,
+  c("MANDATEID", "CUSTOMERACCOUNT", "CUSTOMERBANKACCOUNT",
+    "CREDITORBANKACCOUNT", "STATUS", "USAGECOUNT")
+)
+
+default_raw <- read_default_mandates(path_in)
+
+assert_key(cust_raw,    "CUSTOMERACCOUNT", "Customers V3")
+assert_key(mand_raw,    "MANDATEID",       "Customer direct debit mandates")
+assert_key(default_raw, "CUSTOMERACCOUNT", "Standardmandat-Export")
+
+cat("Debitoren:", nrow(cust_raw),
+    "| Mandate:", nrow(mand_raw),
+    "| Debitoren mit Standardmandats-ID:",
+    sum(!is.na(default_raw$DEFAULTMANDATEID)), "\n")
+```
+
+```{r status-check}
+# Schreibweise der Stati gegen den Export pruefen
+status_im_export <- sort(unique(mand_raw$STATUS))
+cat("Stati im Export:", paste(status_im_export, collapse = ", "), "\n")
+
+if (!STATUS_CANCELED %in% status_im_export)
+  warning("Status '", STATUS_CANCELED, "' kommt im Export nicht vor - ",
+          "Schreibweise im Machbarkeitstest (Schritt 0) pruefen.")
+
+status_ohne_treffer <- setdiff(STATUS_TO_CANCEL, status_im_export)
+if (length(status_ohne_treffer) > 0)
+  cat("Hinweis: STATUS_TO_CANCEL ohne Treffer im Export:",
+      paste(status_ohne_treffer, collapse = ", "), "\n")
+```
+
+---
+
+# Schritt 2 — Population bestimmen
+
+```{r scope}
+cust_scope <- cust_raw |>
+  dplyr::filter(COMPANYCHAIN %in% COMPANY_CHAINS) |>
+  dplyr::select(CUSTOMERACCOUNT, ORGANIZATIONNAME, COMPANYCHAIN,
+                PAYMENTMETHOD, PAYMENTBANKACCOUNT) |>
+  dplyr::left_join(default_raw, by = "CUSTOMERACCOUNT")
+
+if (nrow(cust_scope) == 0)
+  stop("Keine Debitoren mit COMPANYCHAIN in: ",
+       paste(COMPANY_CHAINS, collapse = ", "))
+
+chains_ohne_debitor <- setdiff(COMPANY_CHAINS, cust_scope$COMPANYCHAIN)
+if (length(chains_ohne_debitor) > 0)
+  warning("Unternehmensketten ohne Debitor: ",
+          paste(chains_ohne_debitor, collapse = ", "))
+
+# Kein einziger Debitor mit Standardmandats-ID deutet auf einen falschen
+# oder falsch gefilterten Standardmandat-Export hin.
+if (all(is.na(cust_scope$DEFAULTMANDATEID)))
+  warning("Kein Debitor der Population hat laut Export eine ",
+          "Standardmandats-ID - Standardmandat-Export pruefen.")
+
+print(dplyr::count(cust_scope, COMPANYCHAIN, name = "DEBITOREN"))
+```
+
+---
+
+# Schritt 3 — Mandate klassifizieren
+
+```{r classify}
+AKTION_STORNO       <- "stornieren"
+AKTION_STORNIERT    <- "bereits storniert"
+AKTION_UNVERAENDERT <- "unveraendert"
+
+mand_scope <- mand_raw |>
+  dplyr::inner_join(
+    cust_scope |>
+      dplyr::select(CUSTOMERACCOUNT, ORGANIZATIONNAME, COMPANYCHAIN,
+                    DEFAULTMANDATEID),
+    by = "CUSTOMERACCOUNT",
+    na_matches = "never"   # Mandate ohne Debitorenkonto nie zuordnen
+  ) |>
+  dplyr::mutate(
+    dplyr::across(dplyr::any_of(DATE_COLS), excel_to_date),
+    AKTION = dplyr::case_when(
+      STATUS %in% STATUS_TO_CANCEL ~ AKTION_STORNO,
+      STATUS == STATUS_CANCELED    ~ AKTION_STORNIERT,
+      TRUE                         ~ AKTION_UNVERAENDERT
+    ),
+    IST_STANDARDMANDAT = !is.na(DEFAULTMANDATEID) & MANDATEID == DEFAULTMANDATEID,
+    VERWENDET          = suppressWarnings(as.numeric(USAGECOUNT)) > 0
+  ) |>
+  dplyr::add_count(CUSTOMERACCOUNT, name = "COUNT_MANDATES") |>
+  dplyr::arrange(CUSTOMERACCOUNT, MANDATEID)
+
+print(dplyr::count(mand_scope, COMPANYCHAIN, STATUS, AKTION, name = "MANDATE"))
+
+# Stati, die weder storniert werden noch storniert sind (z. B. abweichende
+# Schreibweise oder lokalisierte Bezeichnung im Export)
+status_unbehandelt <- setdiff(unique(mand_scope$STATUS),
+                              c(STATUS_TO_CANCEL, STATUS_CANCELED))
+if (length(status_unbehandelt) > 0)
+  warning("Mandate mit nicht behandeltem Status bleiben unveraendert: ",
+          paste(status_unbehandelt, collapse = ", "))
+```
+
+```{r customers-summary}
+# Je Debitor der Population: Anzahl Mandate gesamt / zu stornieren
+debitoren <- cust_scope |>
+  dplyr::left_join(
+    mand_scope |>
+      dplyr::group_by(CUSTOMERACCOUNT) |>
+      dplyr::summarise(
+        N_MANDATE = dplyr::n(),
+        N_STORNO  = sum(AKTION == AKTION_STORNO),
+        STANDARD_WIRD_STORNIERT =
+          any(IST_STANDARDMANDAT & AKTION == AKTION_STORNO),
+        .groups   = "drop"
+      ),
+    by = "CUSTOMERACCOUNT"
+  ) |>
+  dplyr::mutate(
+    dplyr::across(c(N_MANDATE, N_STORNO), ~ dplyr::coalesce(.x, 0L)),
+    STANDARD_WIRD_STORNIERT = dplyr::coalesce(STANDARD_WIRD_STORNIERT, FALSE)
+  ) |>
+  dplyr::arrange(COMPANYCHAIN, CUSTOMERACCOUNT)
+
+cat("Debitoren in Population:", nrow(debitoren),
+    "| mit Mandat:", sum(debitoren$N_MANDATE > 0),
+    "| mit Mandat zu stornieren:", sum(debitoren$N_STORNO > 0), "\n")
+```
+
+## Auffälligkeiten
+
+```{r anomalies}
+# Standardmandats-ID je Debitor gegen den vollstaendigen Mandate-Export pruefen
+default_check <- cust_scope |>
+  dplyr::filter(!is.na(DEFAULTMANDATEID)) |>
+  dplyr::left_join(
+    mand_raw |>
+      dplyr::select(DEFAULTMANDATEID = MANDATEID,
+                    MANDAT_DEBITOR   = CUSTOMERACCOUNT,
+                    MANDAT_STATUS    = STATUS),
+    by = "DEFAULTMANDATEID"
+  )
+
+auffaelligkeiten <- dplyr::bind_rows(
+  default_check |>
+    dplyr::filter(is.na(MANDAT_DEBITOR)) |>
+    dplyr::transmute(CUSTOMERACCOUNT, ORGANIZATIONNAME, COMPANYCHAIN,
+                     MANDATEID = DEFAULTMANDATEID, STATUS = MANDAT_STATUS,
+                     HINWEIS = "Standardmandat nicht im Mandate-Export"),
+  default_check |>
+    dplyr::filter(!is.na(MANDAT_DEBITOR), MANDAT_DEBITOR != CUSTOMERACCOUNT) |>
+    dplyr::transmute(CUSTOMERACCOUNT, ORGANIZATIONNAME, COMPANYCHAIN,
+                     MANDATEID = DEFAULTMANDATEID, STATUS = MANDAT_STATUS,
+                     HINWEIS = paste("Standardmandat gehoert zu Debitor",
+                                     MANDAT_DEBITOR)),
+  mand_scope |>
+    dplyr::filter(AKTION == AKTION_UNVERAENDERT) |>
+    dplyr::transmute(CUSTOMERACCOUNT, ORGANIZATIONNAME, COMPANYCHAIN,
+                     MANDATEID, STATUS,
+                     HINWEIS = "Status weder zu stornieren noch storniert")
+)
+
+cat("Auffaelligkeiten:", nrow(auffaelligkeiten), "\n")
+```
+
+---
+
+# Schritt 4 — Importdateien
+
+## Standardmandats-ID leeren
+
+Ohne Entity-Erweiterung ist dies **keine** DMF-Importdatei, sondern die
+Arbeitsliste für den in *Schritt 0* ermittelten Weg.
+
+```{r default-mandate}
+standardmandat_leeren <- default_check |>
+  dplyr::transmute(
+    CUSTOMERACCOUNT, ORGANIZATIONNAME, COMPANYCHAIN,
+    DEFAULTMANDATEID_ALT = DEFAULTMANDATEID,
+    MANDAT_STATUS
+  ) |>
+  dplyr::arrange(COMPANYCHAIN, CUSTOMERACCOUNT)
+
+cat("Standardmandats-ID zu leeren:", nrow(standardmandat_leeren), "Debitoren\n")
+```
+
+## Mandate stornieren
+
+```{r import-mandates}
+import_mandate <- mand_scope |>
+  dplyr::filter(AKTION == AKTION_STORNO) |>
+  dplyr::transmute(
+    MANDATEID,
+    CREDITORBANKACCOUNT,
+    CUSTOMERACCOUNT,
+    CUSTOMERBANKACCOUNT,
+    STATUS           = STATUS_CANCELED,
+    CANCELLATIONDATE = CANCELLATION_DATE
+  )
+
+cat("Importdatei Mandate:", nrow(import_mandate), "Datensaetze\n")
+```
+
+## Zahlungsdaten am Debitor (optional)
+
+```{r import-payment}
+change_method <- !is.na(NEW_PAYMENT_METHOD)
+
+zahlung_neu <- cust_scope |>
+  dplyr::mutate(
+    PAYMENTMETHOD_NEU =
+      if (change_method) NEW_PAYMENT_METHOD else PAYMENTMETHOD,
+    PAYMENTBANKACCOUNT_NEU =
+      if (CLEAR_PAYMENT_BANKACCOUNT) NA_character_ else PAYMENTBANKACCOUNT
+  ) |>
+  dplyr::filter(
+    dplyr::coalesce(PAYMENTMETHOD, "") != dplyr::coalesce(PAYMENTMETHOD_NEU, "") |
+      dplyr::coalesce(PAYMENTBANKACCOUNT, "") !=
+        dplyr::coalesce(PAYMENTBANKACCOUNT_NEU, "")
+  )
+
+# zahlung_neu enthaelt nur Debitoren, bei denen sich tatsaechlich ein Wert
+# aendert. Importiert werden nur die Spalten, die laut Parameter gesetzt sind.
+import_zahlung <- zahlung_neu |>
+  dplyr::transmute(
+    CUSTOMERACCOUNT,
+    PAYMENTMETHOD      = PAYMENTMETHOD_NEU,
+    PAYMENTBANKACCOUNT = PAYMENTBANKACCOUNT_NEU
+  ) |>
+  dplyr::select(dplyr::all_of(c(
+    "CUSTOMERACCOUNT",
+    if (change_method) "PAYMENTMETHOD",
+    if (CLEAR_PAYMENT_BANKACCOUNT) "PAYMENTBANKACCOUNT"
+  )))
+
+cat("Importdatei Zahlungsdaten:", nrow(import_zahlung), "Debitoren",
+    if (nrow(import_zahlung) == 0) "(Standard: keine Aenderung)", "\n")
+```
+
+---
+
+# Schritt 5 — Excel-Export
+
+```{r overview}
+MANDATE_KONTROLL_COLS <- c(
+  "COMPANYCHAIN", "CUSTOMERACCOUNT", "ORGANIZATIONNAME", "MANDATEID", "STATUS",
+  "AKTION", "IST_STANDARDMANDAT", "COUNT_MANDATES", "USAGECOUNT", "VERWENDET",
+  DATE_COLS, "CUSTOMERBANKACCOUNT", "CREDITORBANKACCOUNT"
+)
+
+mandate_kontrolle <- mand_scope |>
+  dplyr::select(dplyr::any_of(MANDATE_KONTROLL_COLS))
+
+is_storno <- mand_scope$AKTION == AKTION_STORNO
+
+uebersicht <- dplyr::tibble(
+  KENNZAHL = c(
+    "Debitoren in Population",
+    "Debitoren mit mindestens einem Mandat",
+    "Mandate gesamt",
+    "Mandate zu stornieren",
+    "davon bereits verwendet (USAGECOUNT > 0)",
+    "Mandate bereits storniert",
+    "Mandate unveraendert (anderer Status)",
+    "Debitoren mit Standardmandats-ID (zu leeren)",
+    "Debitoren mit Aenderung Zahlungsdaten",
+    "Auffaelligkeiten"
+  ),
+  WERT = c(
+    nrow(debitoren),
+    sum(debitoren$N_MANDATE > 0),
+    nrow(mand_scope),
+    sum(is_storno),
+    sum(is_storno & mand_scope$VERWENDET, na.rm = TRUE),
+    sum(mand_scope$AKTION == AKTION_STORNIERT),
+    sum(mand_scope$AKTION == AKTION_UNVERAENDERT),
+    nrow(standardmandat_leeren),
+    nrow(import_zahlung),
+    nrow(auffaelligkeiten)
+  )
+)
+
+print(uebersicht)
+```
+
+```{r export}
+run_date <- format(Sys.Date(), "%Y-%m-%d")
+
+# DMF-Importdatei: Mandate stornieren
+writexl::write_xlsx(
+  list(Customer_direct_debit_mandates = import_mandate),
+  out_file("Import_Customer direct debit mandates.xlsx")
+)
+
+# DMF-Importdatei: Zahlungsdaten (nur wenn laut Parameter etwas zu aendern ist)
+if (nrow(import_zahlung) > 0) {
+  writexl::write_xlsx(
+    list(Customers_V3 = import_zahlung),
+    out_file("Import_Customers V3_Zahlungsdaten.xlsx")
+  )
+}
+
+# Kontrollliste fuer den Fachbereich
+writexl::write_xlsx(
+  list(
+    uebersicht            = uebersicht,
+    debitoren             = debitoren,
+    zu_stornieren         = mandate_kontrolle |>
+      dplyr::filter(AKTION == AKTION_STORNO),
+    nicht_anfassen        = mandate_kontrolle |>
+      dplyr::filter(AKTION != AKTION_STORNO),
+    standardmandat_leeren = standardmandat_leeren,
+    zahlungsdaten         = zahlung_neu,
+    auffaelligkeiten      = auffaelligkeiten
+  ),
+  out_file(paste0("Kontrollliste_", run_date, ".xlsx"))
+)
+
+# Baseline: Zustand VOR dem Import, unveraendert wie exportiert
+writexl::write_xlsx(
+  list(
+    mandate_vorher   = mand_raw |>
+      dplyr::semi_join(cust_scope, by = "CUSTOMERACCOUNT"),
+    debitoren_vorher = cust_scope
+  ),
+  out_file(paste0("Baseline_", run_date, ".xlsx"))
+)
+```
+
+---
+
+# Schritt 6 — Testdateien
+
+Je Testfall wird eine eigene Importdatei erzeugt, damit die Fälle einzeln
+importiert und geprüft werden können. Die Testfälle `A` und `B` sind die beiden
+Importe des Machbarkeitstests aus *Schritt 0*.
+
+| Testfall | Bedeutung |
+|----------|-----------|
+| `A_ein_Mandat_ohne_Standard` | genau ein Mandat zu stornieren, keine Standardmandats-ID |
+| `B_ein_Mandat_mit_Standard` | genau ein Mandat zu stornieren, und dieses ist das Standardmandat |
+| `C_mehrere_Mandate` | mehrere Mandate, alle zu stornieren |
+| `D_gemischt` | Mandate zu stornieren und Mandate, die nicht angefasst werden |
+| `E_nur_Standard_leeren` | nichts zu stornieren, aber Standardmandats-ID gesetzt |
+
+Debitoren mit genau einem Mandat, deren Standardmandats-ID auf ein **anderes**
+Mandat zeigt, sind Auffälligkeiten und werden keinem Testfall zugeordnet.
+
+```{r test-cases}
+testfaelle <- debitoren |>
+  dplyr::mutate(
+    N_REST       = N_MANDATE - N_STORNO,
+    HAT_STANDARD = !is.na(DEFAULTMANDATEID),
+    EIN_MANDAT   = N_STORNO == 1 & N_REST == 0,
+    TESTFALL = dplyr::case_when(
+      EIN_MANDAT & !HAT_STANDARD            ~ "A_ein_Mandat_ohne_Standard",
+      EIN_MANDAT & STANDARD_WIRD_STORNIERT  ~ "B_ein_Mandat_mit_Standard",
+      EIN_MANDAT                            ~ NA_character_,
+      N_STORNO >  1 & N_REST == 0           ~ "C_mehrere_Mandate",
+      N_STORNO >= 1 & N_REST >  0           ~ "D_gemischt",
+      N_STORNO == 0 & HAT_STANDARD          ~ "E_nur_Standard_leeren"
+    )
+  ) |>
+  dplyr::filter(!is.na(TESTFALL))
+
+test_auswahl <- dplyr::bind_rows(
+  testfaelle |>
+    dplyr::group_by(TESTFALL) |>
+    dplyr::slice_head(n = TEST_CUSTOMERS_PER_CASE) |>
+    dplyr::ungroup(),
+  testfaelle |> dplyr::filter(CUSTOMERACCOUNT %in% TEST_CUSTOMERS)
+) |>
+  dplyr::distinct(CUSTOMERACCOUNT, .keep_all = TRUE) |>
+  dplyr::arrange(TESTFALL, CUSTOMERACCOUNT)
+
+print(dplyr::count(test_auswahl, TESTFALL, name = "DEBITOREN"))
+```
+
+```{r test-files}
+for (fall in unique(test_auswahl$TESTFALL)) {
+  konten      <- test_auswahl$CUSTOMERACCOUNT[test_auswahl$TESTFALL == fall]
+  import_test <- import_mandate |> dplyr::filter(CUSTOMERACCOUNT %in% konten)
+
+  # Testfall E hat keine Mandate zu stornieren -> keine Importdatei
+  if (nrow(import_test) > 0) {
+    writexl::write_xlsx(
+      list(Customer_direct_debit_mandates = import_test),
+      out_file(paste0("Test_", fall, "_Customer direct debit mandates.xlsx"))
+    )
+  }
+}
+
+# Begleitliste zu den Testdateien: Testdebitoren, deren Mandate (Zustand
+# vorher) und die zu leerenden Standardmandats-IDs
+writexl::write_xlsx(
+  list(
+    testfaelle            = test_auswahl,
+    mandate_vorher        = mandate_kontrolle |>
+      dplyr::filter(CUSTOMERACCOUNT %in% test_auswahl$CUSTOMERACCOUNT),
+    standardmandat_leeren = standardmandat_leeren |>
+      dplyr::filter(CUSTOMERACCOUNT %in% test_auswahl$CUSTOMERACCOUNT)
+  ),
+  out_file("Test_Uebersicht.xlsx")
+)
+
+cat("Testdebitoren:", nrow(test_auswahl), "\n")
+```
+
+---
+
+# Schritt 7 — Nachkontrolle
+
+Nach dem Import werden *Customer direct debit mandates* und der
+Standardmandat-Export **erneut** gezogen und unter denselben Dateinamen in
+`path_post` abgelegt. Die Exporte in `path_in` (Zustand vorher) bleiben
+unverändert liegen – auf ihnen beruht die Population.
+
+Erwartet wird: kein Mandat der Population mehr in einem Status aus
+`STATUS_TO_CANCEL`, alle importierten Mandate vorhanden und im Status
+`STATUS_CANCELED`, keine Standardmandats-ID mehr gesetzt.
+
+```{r post-check}
+# Fuer Teiltests auf die Testdebitoren einschraenken:
+#   kontroll_konten <- test_auswahl$CUSTOMERACCOUNT
+kontroll_konten <- cust_scope$CUSTOMERACCOUNT
+
+post_files <- paste0(path_post, c(FILE_MANDATES, FILE_DEFAULT_MANDATE))
+
+if (!all(file.exists(post_files))) {
+  cat("Nachkontrolle NICHT DURCHGEFUEHRT - Exporte fehlen in:", path_post, "\n")
+} else {
+  mand_post <- read_dmf_export(
+    path_post, FILE_MANDATES, c("MANDATEID", "CUSTOMERACCOUNT", "STATUS")
+  ) |>
+    dplyr::filter(CUSTOMERACCOUNT %in% kontroll_konten)
+
+  mandate_offen <- mand_post |>
+    dplyr::filter(STATUS %in% STATUS_TO_CANCEL) |>
+    dplyr::select(CUSTOMERACCOUNT, MANDATEID, STATUS)
+
+  # Importierte Mandate muessen jetzt genau den Zielstatus haben
+  mandate_falscher_status <- mand_post |>
+    dplyr::semi_join(import_mandate, by = "MANDATEID") |>
+    dplyr::filter(is.na(STATUS) | STATUS != STATUS_CANCELED) |>
+    dplyr::select(CUSTOMERACCOUNT, MANDATEID, STATUS)
+
+  mandate_fehlend <- import_mandate |>
+    dplyr::filter(CUSTOMERACCOUNT %in% kontroll_konten) |>
+    dplyr::anti_join(mand_post, by = "MANDATEID") |>
+    dplyr::select(CUSTOMERACCOUNT, MANDATEID)
+
+  standard_offen <- read_default_mandates(path_post) |>
+    dplyr::filter(CUSTOMERACCOUNT %in% kontroll_konten,
+                  !is.na(DEFAULTMANDATEID))
+
+  nachkontrolle <- dplyr::tibble(
+    PRUEFUNG = c("Mandate noch in einem Status aus STATUS_TO_CANCEL",
+                 "Importierte Mandate nicht im Zielstatus",
+                 "Importierte Mandate fehlen im Export",
+                 "Standardmandats-ID noch gesetzt"),
+    ANZAHL   = c(nrow(mandate_offen), nrow(mandate_falscher_status),
+                 nrow(mandate_fehlend), nrow(standard_offen))
+  )
+  print(nachkontrolle)
+
+  writexl::write_xlsx(
+    list(
+      nachkontrolle           = nachkontrolle,
+      mandate_offen           = mandate_offen,
+      mandate_falscher_status = mandate_falscher_status,
+      mandate_fehlend         = mandate_fehlend,
+      standard_offen          = standard_offen
+    ),
+    out_file(paste0("Nachkontrolle_", format(Sys.Date(), "%Y-%m-%d"), ".xlsx"))
+  )
+
+  if (sum(nachkontrolle$ANZAHL) > 0)
+    warning("Nachkontrolle NICHT bestanden - siehe Nachkontrolle-Datei.")
+  else
+    cat("Nachkontrolle bestanden.\n")
+}
+```
+
+---
+
+# Durchführung
+
+1. **Testumgebung:** `ENVIRONMENT <- "INT"`, Exporte in `path_in` ablegen,
+   Playbook ausführen.
+2. **Machbarkeitstest:** Testfälle `A` und `B` einzeln importieren
+   (*Schritt 0*), Weg für die Standardmandats-ID festlegen.
+3. **Weitere Testfälle:** `C`, `D`, `E` importieren, in der Oberfläche prüfen,
+   Nachkontrolle mit `kontroll_konten <- test_auswahl$CUSTOMERACCOUNT`.
+4. **Freigabe:** Kontrollliste an den Fachbereich; `auffaelligkeiten` und die
+   Mandate mit `VERWENDET = TRUE` klären.
+5. **Produktion:** `ENVIRONMENT <- "PROD"`, Exporte **unmittelbar vor** dem
+   Import neu ziehen, Playbook ausführen, Baseline archivieren.
+6. **Import** im Mandanten `LEGAL_ENTITY` (die Importdateien enthalten wie in
+   MD3-808 keine `DATAAREAID`), in der Reihenfolge Standardmandats-ID leeren →
+   Mandate stornieren → (optional) Zahlungsdaten.
+7. **Nachkontrolle** (*Schritt 7*) und Ergebnis im Ticket dokumentieren.
+
+## Vor dem Produktiv-Import klären
+
+- **Offene Belege:** Stornierte Mandate können noch an offenen Aufträgen, nicht
+  gebuchten Rechnungen oder Zahlungsjournalzeilen hängen. `USAGECOUNT` zeigt
+  nur die bisherige Verwendung, nicht offene Belege.
+- **Zahlungsmethode:** Bleiben Debitoren auf einer Lastschrift-Zahlungsmethode
+  ohne gültiges Mandat, schlägt der nächste Lastschrift-Zahlungsvorschlag für
+  sie fehl oder überspringt sie. Der Sheet `debitoren` der Kontrollliste zeigt
+  die aktuelle Zahlungsmethode je Debitor.
+
+## Rollback
+
+Ein storniertes Mandat lässt sich voraussichtlich **nicht** per Import
+reaktivieren. Die Baseline-Datei dokumentiert den Zustand vor dem Import
+(Mandate und Standardmandats-ID je Debitor). Müsste die Änderung zurückgenommen
+werden, sind die Mandate auf Basis der Baseline **neu anzulegen** (Logik
+`CreateNew` aus MD3-808) und die Standardmandats-ID wieder zu setzen. Die
+eigentliche Absicherung sind daher der Test in der Testumgebung und die
+Freigabe der Kontrollliste durch den Fachbereich.
