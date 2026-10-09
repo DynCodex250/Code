@@ -1,0 +1,118 @@
+| Duty | Assigned by analyze_role_license_decision | Manually tested in D365 |
+|------|-------------------------------------------|-------------------------|
+| CaseSalesCasesMaintain | Operations - Activity | Operations - Activity |
+| CaseServiceCasesMaintain | Operations - Activity | Operations - Activity |
+| CFMGeneralMaintain | Operations - Activity | Operations - Activity |
+| CreditCardCreditCardMaintain | Operations - Activity | Operations - Activity |
+| CustCustomerMasterInquire | Operations - Activity | Operations - Activity |
+| CustCustomersMaintain | Operations - Activity | Finance/SMC |
+| CustInvoice4PaymMaintain_RU | Operations - Activity | Operations - Activity |
+| CustInvoiceCustomerInvoiceStatusInquire | Operations - Activity | Operations - Activity |
+| EFDocumentMaintain_BR | Operations - Activity | Operations - Activity |
+| InventMarkingMaintain | Operations - Activity | Operations - Activity |
+| InventOnHandReservationMaintain | Operations - Activity | Operations - Activity |
+| InventTrackingRegisterCorrectionMaintain | Operations - Activity | Operations - Activity |
+| InventTrackingRegisterUnknownMaintain | Operations - Activity | Operations - Activity |
+| KanbanExecutionSalesEventsMaintain | Operations - Activity | Operations - Activity |
+| MaintainServiceEventGroups_IN | Operations - Activity | Operations - Activity |
+| MCRCatalogRequestMaintain | Operations - Activity | Operations - Activity |
+| MCRCustMergeMaintain | Operations - Activity | Operations - Activity |
+| MCRCustomerServiceMaintain | Operations - Activity | Operations - Activity |
+| MCRDirectDeliveryMaintain | Operations - Activity | Operations - Activity |
+| MCRGiftCardAddAmountMaintain | Operations - Activity | Operations - Activity |
+| MCRInstallmentBillMaintain | Operations - Activity | Operations - Activity |
+| MCRInventPickMaintain | Operations - Activity | Operations - Activity |
+| MCRItemDisplayMaintain | Operations - Activity | Operations - Activity |
+| MCRPaymCheckMaintain | Operations - Activity | Operations - Activity |
+| MCRPaymCreditCardMaintain | Operations - Activity | Operations - Activity |
+| MCRPriceOverrideMaintain | Operations - Activity | Operations - Activity |
+| MCRReturnSalesReturnOrderMaintain | Operations - Activity | Operations - Activity |
+| MCRRoyaltyTableMaintain | Operations - Activity | Operations - Activity |
+| MCRSalesHoldMaintain | Operations - Activity | Operations - Activity |
+| MCRSalesMaintain | Operations - Activity | Operations - Activity |
+| MCRSalesOrderMaintain | Operations - Activity | Operations - Activity |
+| MCRSalesTableCompleteMaintain | Operations - Activity | Operations - Activity |
+| MCRSalesTableUpdateGiftCardMaintain | Operations - Activity | Operations - Activity |
+| PCProductConfigConfigurationMaintain | Operations - Activity | Operations - Activity |
+| ProdProductionOrderCreationMaintain | Operations - Activity | Operations - Activity |
+| ProjActivityMasterMaintain | Operations - Activity | Operations - Activity |
+| ProjProjectQuotationMaintain | Operations - Activity | Operations - Activity |
+| ReqCtpMaintain | Operations - Activity | Operations - Activity |
+| RetailAddItemsListMaintain | Operations - Activity | Operations - Activity |
+| RetailCouponsMaintain | Operations - Activity | Operations - Activity |
+| RetailGiftCardsMaintain | Operations - Activity | Operations - Activity |
+| RetailSyncOrdersJobScheduler | Operations - Activity | Operations - Activity |
+| RetailSyncOrderTemplatesJobScheduler | Operations - Activity | Operations - Activity |
+| ReturnAcknowledgementApprove | Operations - Activity | Operations - Activity |
+| ReturnSalesReturnOrderMaintain | Operations - Activity | Operations - Activity |
+| SalesAgreementReleaseSalesOrder | Operations - Activity | Operations - Activity |
+| SalesFiscalDocumentMaintain_BR | Operations - Activity | Operations - Activity |
+| SalesOrderMaintain | Operations - Activity | Operations - Activity |
+| SalesOrderProgressInquire | Operations - Activity | Operations - Activity |
+| SalesPackingSlipCorrectionMaintain | Operations - Activity | Operations - Activity |
+| SalesPackingSlipMaintain | Operations - Activity | Operations - Activity |
+| SalesPickingListRelease | Operations - Activity | Operations - Activity |
+| SalesQuotationMaintain | Operations - Activity | Operations - Activity |
+| SMAServiceOrderSMAintain | Operations - Activity | Operations - Activity |
+| smmActivitiesMaintain | Operations - Activity | Operations - Activity |
+| smmBusinessRelationsMaintain | Operations - Activity | Operations - Activity |
+| smmContactsMaintain | Operations - Activity | Operations - Activity |
+| smmLeadsAndOpportunitiesInquire | Operations - Activity | Operations - Activity |
+| smmLeadsAndOpportunititiesMaintain | Operations - Activity | Operations - Activity |
+| smmOutlookSynchronizationMaintain | Operations - Activity | Operations - Activity |
+| TaxDocumentBaseMaintain | Operations - Activity | Operations - Activity |
+| TaxSalesTaxTrnStatusInquirWithoutTaxPrv | Operations - Activity | Operations - Activity |
+| WHSAutoReleaseToWarehouseMaintain | Operations - Activity | Operations - Activity |
+| WHSSalesOrderReleaseMaintain | Operations - Activity | Operations - Activity |
+| WHSWarehousePlanningStatusInquire | Operations - Activity | Operations - Activity |
+| CaseSalesCasesMaintain | Team Members | Operations - Activity |
+| CaseServiceCasesMaintain | Team Members | Operations - Activity |
+| CFMGeneralMaintain | Team Members | Operations - Activity |
+| CustCustomerMasterInquire | Team Members | Operations - Activity |
+| CustCustomerMasterInquireWithoutTaxView | Team Members | Operations - Activity |
+| CustCustomersMaintain | Team Members | Finance/SMC |
+| CustInvoiceCustomerInvoiceStatusInquire | Team Members | Operations - Activity |
+| KanbanExecutionSalesEventsMaintain | Team Members | Operations - Activity |
+| MCRCustomerServiceMaintain | Team Members | Operations - Activity |
+| MCRDirectDeliveryMaintain | Team Members | Operations - Activity |
+| MCRInventPickMaintain | Team Members | Operations - Activity |
+| MCRPaymCreditCardMaintain | Team Members | Operations - Activity |
+| MCRPriceOverrideMaintain | Team Members | Operations - Activity |
+| MCRReturnSalesReturnOrderMaintain | Team Members | Operations - Activity |
+| MCRSalesHoldMaintain | Team Members | Operations - Activity |
+| MCRSalesMaintain | Team Members | Operations - Activity |
+| MCRSalesOrderMaintain | Team Members | Operations - Activity |
+| PriceDiscProductPriceDiscMasterMaintain | Team Members | Supply Chain Management |
+| PriceDiscProductPricesDiscountsApprove | Team Members | Supply Chain Management |
+| ProdProductionOrderCreationMaintain | Team Members | Operations - Activity |
+| ProjActivityMasterMaintain | Team Members | Operations - Activity |
+| ProjProjectQuotationMaintain | Team Members | Operations - Activity |
+| ReqCtpMaintain | Team Members | Operations - Activity |
+| RetailAddItemsListMaintain | Team Members | Operations - Activity |
+| RetailCouponsMaintain | Team Members | Operations - Activity |
+| ReturnAcknowledgementApprove | Team Members | Operations - Activity |
+| ReturnSalesReturnOrderMaintain | Team Members | Operations - Activity |
+| SalesAgreementReleaseSalesOrder | Team Members | Operations - Activity |
+| SalesFiscalDocumentMaintain_BR | Team Members | Operations - Activity |
+| SalesOrderMaintain | Team Members | Operations - Activity |
+| SalesOrderProgressInquire | Team Members | Operations - Activity |
+| SalesPackingSlipCorrectionMaintain | Team Members | Operations - Activity |
+| SalesPackingSlipMaintain | Team Members | Operations - Activity |
+| SalesPickingListRelease | Team Members | Operations - Activity |
+| SalesQuotationMaintain | Team Members | Operations - Activity |
+| SMAServiceOrderSMAintain | Team Members | Operations - Activity |
+| smmActivitiesMaintain | Team Members | Operations - Activity |
+| smmBusinessRelationsMaintain | Team Members | Operations - Activity |
+| smmContactsMaintain | Team Members | Operations - Activity |
+| smmLeadsAndOpportunitiesInquire | Team Members | Operations - Activity |
+| smmLeadsAndOpportunititiesMaintain | Team Members | Operations - Activity |
+| smmOutlookSynchronizationMaintain | Team Members | Operations - Activity |
+| TaxSalesTaxTrnStatusInquirWithoutTaxPrv | Team Members | Operations - Activity |
+| WHSAutoReleaseToWarehouseMaintain | Team Members | Operations - Activity |
+| WHSWarehousePlanningStatusInquire | Team Members | Operations - Activity |
+| CustCustomersMaintain | Commerce | Finance/SMC |
+| GUPTradeAgreementMaintain | Commerce | Finance/SMC/Commerce |
+| PriceDiscProductPriceDiscMasterMaintain | Commerce | Supply Chain Management |
+| CustCustomersMaintain | Finance | Finance/SMC |
+| PriceDiscProductPriceDiscMasterMaintain | Supply Chain Management | Supply Chain Management |
+| PriceDiscProductPricesDiscountsApprove | Supply Chain Management | Supply Chain Management |
