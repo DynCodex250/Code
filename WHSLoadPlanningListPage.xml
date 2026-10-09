@@ -1,0 +1,2319 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AxForm xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns="Microsoft.Dynamics.AX.Metadata.V6">
+	<Name>WHSLoadPlanningListPage</Name>
+	<SourceCode>
+		<Methods xmlns="">
+			<Method>
+				<Name>classDeclaration</Name>
+				<Source><![CDATA[
+[Form]
+public class WHSLoadPlanningListPage extends FormRun implements WHSILoadIdRangeProvider
+{
+    QueryBuildRange                 qbrLoad;
+    WHSLoadStatus                   loadStatusFilter;
+    boolean                         activeOnly;
+    boolean                         showClosedLoads;
+    boolean                         filteredByMenuItem;
+    WHSLoadPlanningListPageForm     whsLoadPlanningListPageForm;
+    protected QueryBuildDataSource  qbds;
+
+    private boolean                 showClosedButtonClicked;
+    private readonly boolean        WHSLoadPlanningListSavedViewsFixFlightEnabled = WHSLoadPlanningListSavedViewsFixFlight::instance().isEnabled();
+    private readonly boolean        isShowClosedButtonDeprecated = WHSShowClosedButtonDeprecatedFeature::isEnabled();
+    private readonly boolean        isShowClosedButtonVisible = !WHSShowClosedButtonDeprecatedFeature::isEnabled();
+    private static const str        WhatsNewExternalData = '{EE694C77-3592-4632-BD4B-3B97328F25C3}';
+
+
+    [SysObsolete('This class member is deprecated because it is not used in this class anymore.', false, 17\04\2024)]
+    boolean                         isWhsAllLoadsFormSavedViewsFixFlightEnabled;
+    boolean                         executeQueryWasRun;
+    
+}
+]]></Source>
+			</Method>
+			<Method>
+				<Name>init</Name>
+				<Source><![CDATA[
+    public void init()
+    {
+        boolean inTransitPlanning;
+
+        whsLoadPlanningListPageForm = new WHSLoadPlanningListPageForm();
+
+        if (element.args().parmEnumType() == enumNum(WHSLoadStatus))
+        {
+            filteredByMenuItem = true;
+            loadStatusFilter = element.args().parmEnum();
+        }
+
+        if (element.args().menuItemName() == menuitemDisplayStr(WHSLoadPlanningListPageActive))
+        {
+            filteredByMenuItem = true;
+            activeOnly = true;
+        }
+
+        super();
+
+        StagedWork.visible(!WHSLoadTableDisplayStagedWorkIconFlight::instance().isEnabled());
+
+        inTransitPlanning = TMSParameters::find().InTransitPlanning;
+        ButtonGroupHubConsolidation.visible(inTransitPlanning);
+        OverrideLocation.visible(inTransitPlanning);
+        btnPostShipTransfer.visible(whsLoadPlanningListPageForm.shouldBtnPostShipTransferBeVisible());
+
+        if (element.args().record())
+        {
+            this.setShowClosed(true);
+            whsLoadTable_ds.executeQuery();
+        }
+
+        showClosed.enabled(!filteredByMenuItem && isShowClosedButtonVisible);
+        ShowClosed.visible(isShowClosedButtonVisible);
+        
+        if (isShowClosedButtonVisible && (WHSLoadPlanningListSavedViewsFixFlightEnabled && !filteredByMenuItem))
+        {
+            SystemNotificationsWhatsNewManager::AddWhatsNewWithActionLink(
+                WhatsNewExternalData,
+                "@WAX:WHSSavedViewsFixWarning_Title",
+                "@WAX:WHSSavedViewsFixWarning_Body",
+                ShowClosed.name(),
+                'https://go.microsoft.com/fwlink/?linkid=2334139');
+        }
+
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>loadIdRange</Name>
+				<Source><![CDATA[
+    public WHSLoadIdRange loadIdRange()
+    {
+        return con2StrUnlimited(whsLoadPlanningListPageForm.getSelectedLoadIds(whsLoadTable_ds));
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>setShowClosed</Name>
+				<Source><![CDATA[
+    private void setShowClosed(boolean _showClosed)
+    {
+        if (isShowClosedButtonDeprecated) 
+        {
+            return;
+        }
+        if (!WHSLoadPlanningListSavedViewsFixFlightEnabled || showClosedButtonClicked)
+        {
+            showClosedLoads = _showClosed;
+            ShowClosed.checked(showClosedLoads);
+        }
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>queryFiltersChanged</Name>
+				<Source><![CDATA[
+    protected internal void queryFiltersChanged()
+    {
+        super();
+        
+        if (!filteredByMenuItem)
+        {
+            this.setShowClosed(whsLoadPlanningListPageForm.queryAllowsClosedLoads(WHSLoadTable_ds.queryRun().query()));
+        }
+    }
+
+]]></Source>
+			</Method>
+		</Methods>
+		<DataSources xmlns="">
+			<DataSource>
+				<Name>WHSLoadTable</Name>
+				<Methods>
+					<Method>
+						<Name>executeQuery</Name>
+						<Source><![CDATA[
+        public void executeQuery()
+        {
+            if (isShowClosedButtonDeprecated || (WHSLoadPlanningListSavedViewsFixFlightEnabled && !showClosedButtonClicked))
+            {
+                super();
+                executeQueryWasRun = true;
+                return;
+            }
+
+            if (!filteredByMenuItem)
+            {
+                //Don't set qbrLoad for the first run of executeQuery to protect against overwriting initially loaded saved view range.
+                if (executeQueryWasRun)
+                {
+                    qbrLoad = SysQuery::findOrCreateRange(WHSLoadTable_ds.queryBuildDataSource(), fieldNum(WHSLoadTable, LoadStatus));
+                    qbrLoad.value(whsLoadPlanningListPageForm.calcShowClosedRangeValue(showClosedLoads));
+
+                    //It's needed, otherwise a new unwanted side effect that it hadn't happen before the modification, would appear:
+                    //When we started the form with any 'show closed' saved view, unchecking 'show closed' would have no effect (because it hits the range disabled by Saved Views feauture)
+                    qbrLoad.enabled(true);
+                }
+            }
+
+            super();
+            executeQueryWasRun = true;
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>enableTMSActions</Name>
+						<Source><![CDATA[
+        private void enableTMSActions(boolean _enable)
+        {
+            ActionPaneTabTMS.enabled(_enable);
+
+            TransportationTender.enabled(_enable && whsLoadTable.isAssociableToTender());
+            tmsInvoiceJournal.enabled(_enable && TMSFreightBillDetail::existsInvoiceJournal(whsLoadTable.RouteCode, whsLoadTable.LoadId));
+            manualRoute.enabled(_enable && whsLoadTable.RouteCode == '');
+            addRoute.enabled(_enable 
+                             && !whsLoadTable.RouteCode 
+                             && whsLoadTable.LoadDirection == WHSLoadDirection::Inbound);
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>active</Name>
+						<Source><![CDATA[
+        public int active()
+        {
+            int ret;
+            WHSWorkLine whsWorkLine;
+
+            ret = super();
+
+            btnInboundShipConfirm.enabled(WHSPostPackingSlip::isShipConfirmEnabled(whsLoadTable));
+            btnProductReceipt.enabled(WHSPostPackingSlip::isPackingSlipEnabled(whsLoadTable));
+            btnOutboundShipConfirm.enabled(WHSShipConfirmationAction::newFromBuffer(whsLoadTable).canEnableShipConfirm());
+            WHSSalesPackingSlipPost.enabled(WHSShipConfirm::isPackingSlipEnabledForBuffer(whsLoadTable));
+            btnSendASN.enabled(WHSShipConfirm::isSendASNEnabledForLoad(whsLoadTable));
+            btnBillOfLading.enabled(WHSShipConfirm::isBOLEnabledForLoad(whsLoadTable));
+            btnReverseShipConfirm.enabled(WHSReverseShipConfirm::canShipConfirmationBeReversed(whsLoadTable));
+            btnCancelPackingSlips.enabled(WHSReverseShipConfirm::canCancelSalesPackingSlip(whsLoadTable));
+            btnPostShipTransfer.enabled(WHSShipConfirm::canShipTransferOrder(whsLoadTable));
+            btnCancelProductReceipt.enabled(WHSReverseShipConfirm::canCancelProductReceipt(whsLoadTable));
+            WHSWaveLabel.enabled(WHSWaveLabel::existLoadId(WHSLoadTable.LoadId));
+            btnInboundReceivingCompleted.enabled(WHSLoadTable.canCompleteReceiving());
+            btnInboundReverseReceivingCompleted.enabled(WHSLoadTable.canReverseReceivingCompleted());
+
+            boolean transportLoadShipped = whsLoadTable.isAnyRelatedTransportLoadShipped();
+            change.enabled(whsLoadTable.LoadStatus != WHSLoadStatus::Shipped && !transportLoadShipped);
+            skipWorkLine.enabled(whsLoadTable.LoadStatus < WHSLoadStatus::Loaded && whsLoadTable.LoadStatus >= WHSLoadStatus::Posted);
+
+            whsReverseWork.enabled(whsLoadTable.canReverseWork(transportLoadShipped));
+
+            select firstonly RecId from whsWorkLine
+                where whsWorkLine.LoadId == whsLoadTable.LoadId;
+            whsPickListShipping.enabled(whsWorkLine.RecId );
+
+            this.enableTMSActions(whsLoadTable.canUseTMSActions());
+
+            whsLoadTable_ds.allowEdit(whsLoadTable.LoadStatus < WHSLoadStatus::Shipped);
+            whsLoadTable_ds.allowDelete(whsLoadTable.LoadStatus < WHSLoadStatus::Shipped);
+
+			//Do not allow reverse work for loads containing a catch weight item.
+            whsReverseWork.enabled(whsReverseWork.enabled() && !whsLoadTable.containsCatchWeightItem());
+            
+            return ret;
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>init</Name>
+						<Source><![CDATA[
+        public void init()
+        {
+            super();
+
+            qbds = this.query().dataSourceTable(tableNum(WHSLoadTable));
+            qbrLoad = qbds.addRange(fieldNum(WHSLoadTable, LoadStatus));
+
+            if (!filteredByMenuItem)
+            {
+                qbrLoad.value(whsLoadPlanningListPageForm.calcShowClosedRangeValue(showClosedLoads));
+            }
+            else 
+            {
+                if (element.args().parmEnumType() == enumNum(WHSLoadStatus))
+                {
+                    qbrLoad.value(queryValue(enum2int(loadStatusFilter)));
+                }
+
+                if (activeOnly)
+                {
+                    qbrLoad.value(queryRange(enum2int(WHSLoadStatus::Posted), enum2int(WHSLoadStatus::Loaded)));
+                }
+            }
+
+            this.cacheAddMethod(tableMethodStr(WHSLoadTable, displayNumberOfShipments));
+            this.cacheAddMethod(tableMethodStr(WHSLoadTable, displayNumberOfContainers));
+            this.cacheAddMethod(tableMethodStr(WHSLoadTable, displayTotalVolume));
+            this.cacheAddMethod(tableMethodStr(WHSLoadTable, displayTotalValue));
+            this.cacheAddMethod(tableMethodStr(WHSLoadTable, tmsDisplayEquipmentCode));
+            this.cacheAddMethod(tableMethodStr(WHSLoadTable, displayShipment));
+            this.cacheAddMethod(tableMethodStr(WHSLoadTable, displayWave));
+            this.cacheAddMethod(tableMethodStr(WHSLoadTable, displayTotalGrossWeight));
+            this.cacheAddMethod(tableMethodStr(WHSLoadTable, displayTotalVolumeInLoad));
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+				<Fields>
+					<Field>
+						<DataField>CarrierServiceCode</DataField>
+						<Methods>
+							<Method>
+								<Name>modified</Name>
+								<Source><![CDATA[
+            public void modified()
+            {
+                super();
+
+                whsLoadTable.checkCarrierServiceLoadTemplate();
+            }
+
+]]></Source>
+							</Method>
+						</Methods>
+					</Field>
+				</Fields>
+			</DataSource>
+		</DataSources>
+		<DataControls xmlns="">
+			<Control>
+				<Name>SkipWorkLine</Name>
+				<Type>Button</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        void clicked()
+        {
+            whsLoadPlanningListPageForm.skipWorkLine_clicked(whsLoadTable);
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>WHSLoadList</Name>
+				<Type>MenuFunctionButton</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        void clicked()
+        {
+            whsLoadPlanningListPageForm.whsLoadList_clicked(this, whsLoadTable);
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>WHSPickListShipping</Name>
+				<Type>Button</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        void clicked()
+        {
+            whsLoadPlanningListPageForm.whsPickListShipping_clicked(this, whsLoadTable);
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>btnBillOfLading</Name>
+				<Type>MenuFunctionButton</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        public void clicked()
+        {
+            Args args = new Args();
+            args.caller(this);
+            args.parmObject(WHSLoadTable_DS);
+
+            new MenuFunction(menuItemActionStr(WHSBillOfLadingGenerate), MenuItemType::Action).run(args);
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>btnPostShipTransfer</Name>
+				<Type>MenuFunctionButton</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        public void clicked()
+        {
+            whsLoadPlanningListPageForm.btnPostShipTransfer_clicked(WHSLoadTable_DS);
+
+            whsLoadTable_ds.executeQuery();
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>btnReverseShipConfirm</Name>
+				<Type>MenuFunctionButton</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        public void clicked()
+        {
+            whsLoadPlanningListPageForm.btnReverseShipConfirm_clicked(WHSLoadTable_DS);
+            
+            whsLoadTable_ds.executeQuery();
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>btnCancelPackingSlips</Name>
+				<Type>MenuFunctionButton</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        public void clicked()
+        {
+            whsLoadPlanningListPageForm.btnCancelPackingSlips_clicked(whsLoadTable);
+
+            WHSLoadTable_ds.reread();
+            WHSLoadTable_ds.refresh();
+            // Refresh the menu items.
+            btnReverseShipConfirm.enabled(WHSReverseShipConfirm::canShipConfirmationBeReversed(whsLoadTable));
+            btnCancelPackingSlips.enabled(WHSReverseShipConfirm::canCancelSalesPackingSlip(whsLoadTable));
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>btnCancelProductReceipt</Name>
+				<Type>MenuFunctionButton</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        public void clicked()
+        {
+            whsLoadPlanningListPageForm.btnCancelProductReceipt_clicked(whsLoadTable);
+
+            whsLoadTable_ds.executeQuery();
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>ManualRoute</Name>
+				<Type>MenuFunctionButton</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        public void clicked()
+        {
+            whsLoadPlanningListPageForm.manualRoute_clicked(whsLoadTable);
+
+            whsLoadTable_ds.research(true);
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>AddRoute</Name>
+				<Type>MenuFunctionButton</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        public void clicked()
+        {
+            this.parameters(whsLoadTable.LoadId);
+
+            super();
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>ShowClosed</Name>
+				<Type>CheckBox</Type>
+				<Methods>
+					<Method>
+						<Name>modified</Name>
+						<Source><![CDATA[
+        public boolean modified()
+        {
+            boolean ret;
+
+            ret = super();
+
+            if (ret)
+            {
+                showClosedLoads = showClosed.checked();
+
+                showClosedButtonClicked = WHSLoadPlanningListSavedViewsFixFlightEnabled;
+                whsLoadTable_ds.executeQuery();
+                showClosedButtonClicked = false;
+
+                element.formCustomFilterChanged();
+            }
+            return ret;
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>Wave</Name>
+				<Type>String</Type>
+				<Methods>
+					<Method>
+						<Name>jumpRef</Name>
+						<Source><![CDATA[
+        public void jumpRef()
+        {
+            WHSLoadTable::jumpRefWaveId(whsLoadTable.displayWave(), element);
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>ApptId</Name>
+				<Type>String</Type>
+				<Methods>
+					<Method>
+						<Name>jumpRef</Name>
+						<Source><![CDATA[
+        public void jumpRef()
+        {
+            whsLoadPlanningListPageForm.apptId_jumpRef(this, this.valueStr());
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+		</DataControls>
+		<Members xmlns="" />
+	</SourceCode>
+	<DataSources>
+		<AxFormDataSource xmlns="">
+			<Name>WHSLoadTable</Name>
+			<Table>WHSLoadTable</Table>
+			<Fields>
+				<AxFormDataSourceField>
+					<DataField>AccountNum</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ActualGrossWeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ActualNetWeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ActualTareWeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ActualVolume</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>AllowLoadSplitShipConfirm</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>BillOfLadingId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>BookingNum</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>BrokerCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>CarNumber</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>CarrierCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>CarrierGroupCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>CarrierServiceCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>CarState_BR</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>createdBy</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>createdDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>CustVendRef</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>CutOffUTCDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>dataAreaId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>DestinationHubCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>DestinationName</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>DestinationPostalAddress</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ETA</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ETD</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>FinalDestination</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>HouseBill</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InspectionSeal</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Invalid</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventLocationId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventSiteId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LastUpdateUTCDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LateShipReasonCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadArrivalUTCDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadDepth</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadDirection</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Loader</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadFloorStack</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadHeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadingStrategy</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadNetWeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadPaysFreight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadReferenceNum</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadSchedShipUTCDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadShipConfirmUTCDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadStatus</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadTemplateId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadTipVolume</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadTipWeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadUserDef1</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadUserDef2</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadUserDef3</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadWeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LoadWidth</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>MaxFreightPieces</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ModeCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedBy</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>OrderNum</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>OriginHubCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>OriginName</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>OriginPostalAddress</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PackingSlipType</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Partition</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ProNum</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>RecId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>RequiredSailUTCDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>RouteCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>SailUTCDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>SealNum</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>SystemTareWeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TableId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TractorNumber</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TrailerNumber</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TransportationTemplateId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>VesselName</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>VoyageNum</DataField>
+				</AxFormDataSourceField>
+			</Fields>
+			<ReferencedDataSources />
+			<AllowCreate>No</AllowCreate>
+			<AllowEdit>No</AllowEdit>
+			<Index>LoadIdIdx</Index>
+			<InsertAtEnd>No</InsertAtEnd>
+			<InsertIfEmpty>No</InsertIfEmpty>
+			<StartPosition>Last</StartPosition>
+			<DataSourceLinks />
+			<DerivedDataSources />
+		</AxFormDataSource>
+	</DataSources>
+	<Design>
+		<Caption xmlns="">@WAX312</Caption>
+		<DataSource xmlns="">WHSLoadTable</DataSource>
+		<Pattern xmlns="">ListPage</Pattern>
+		<PatternVersion xmlns="">UX7 1.0</PatternVersion>
+		<ShowNewButton xmlns="">No</ShowNewButton>
+		<Style xmlns="">ListPage</Style>
+		<TitleDataSource xmlns="">WHSLoadTable</TitleDataSource>
+		<UseCaptionFromMenuItem xmlns="">Yes</UseCaptionFromMenuItem>
+		<WindowType xmlns="">ContentPage</WindowType>
+		<Controls xmlns="">
+			<AxFormControl xmlns=""
+				i:type="AxFormActionPaneControl">
+				<Name>ActionPane</Name>
+				<ElementPosition>268435455</ElementPosition>
+				<FilterExpression>%1</FilterExpression>
+				<Type>ActionPane</Type>
+				<VerticalSpacingMode>Fixed</VerticalSpacingMode>
+				<Width>0</Width>
+				<FormControlExtension
+					i:nil="true" />
+				<Controls>
+					<AxFormControl xmlns=""
+						i:type="AxFormActionPaneTabControl">
+						<Name>ActionPaneTabLoads</Name>
+						<ElementPosition>858993458</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>ActionPaneTab</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<Controls>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>MaintainGroup</Name>
+								<ElementPosition>585677358</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<Visible>No</Visible>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>EditButton</Name>
+										<ElementPosition>695943772</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<Visible>No</Visible>
+										<FormControlExtension
+											i:nil="true" />
+										<CopyCallerQuery>Yes</CopyCallerQuery>
+										<MenuItemName>WHSLoadTable</MenuItemName>
+										<OpenMode>Edit</OpenMode>
+										<Primary>Yes</Primary>
+										<Text>@SYS317438</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>ViewButton</Name>
+										<Type>MenuFunctionButton</Type>
+										<Visible>No</Visible>
+										<FormControlExtension
+											i:nil="true" />
+										<ButtonDisplay>TextOnly</ButtonDisplay>
+										<CopyCallerQuery>Yes</CopyCallerQuery>
+										<MenuItemName>WHSLoadTable</MenuItemName>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@SYS316703</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ActionsGroup</Name>
+								<ElementPosition>780903144</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>Change</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>1431655764</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSWorkLocationChange</MenuItemName>
+										<ShowShortCut>No</ShowShortCut>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>HMIMCompatibilityCheck</Name>
+										<ConfigurationKey>HMIMManagement</ConfigurationKey>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>HMIMCompatibilityCheck</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@SYS40422</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>WorkGroup</Name>
+								<ElementPosition>976128930</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSReverseWork</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>1073741822</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DisabledImageLocation>EmbeddedResource</DisabledImageLocation>
+										<MenuItemName>WHSReverseWork</MenuItemName>
+										<Text>@WAX2133</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormButtonControl">
+										<Name>SkipWorkLine</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>1610612733</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>Button</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<ShowShortCut>No</ShowShortCut>
+										<Text>@WAX2021</Text>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@WAX411</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>DetailsGroup</Name>
+								<ElementPosition>1171354716</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSWaveTable</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>477218588</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSWaveTable</MenuItemName>
+										<ShowShortCut>No</ShowShortCut>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WorkButton</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>715827882</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>WHSWorkTable</MenuItemName>
+										<ShowShortCut>No</ShowShortCut>
+										<Text>@WAX411</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>PostErrors</Name>
+										<ElementPosition>1431655764</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>WHSPostError</MenuItemName>
+										<ShowShortCut>No</ShowShortCut>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>LoadSeal</Name>
+										<ElementPosition>1789569705</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>TMSLoadSeal</MenuItemName>
+										<ShowShortCut>No</ShowShortCut>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSHistory</Name>
+										<ElementPosition>1968526675</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>WHSHistory</MenuItemName>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSWaveLabel</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSWaveLabel</MenuItemName>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSPlannedCrossDocking</Name>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSPlannedCrossDocking</MenuItemName>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@WAX1948</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ContainerGroup</Name>
+								<ElementPosition>1366580502</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSContainerTable</Name>
+										<ElementPosition>1073741822</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>WHSContainerTable</MenuItemName>
+										<ShowShortCut>No</ShowShortCut>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSContainerStructure</Name>
+										<ElementPosition>1610612733</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>WHSContainerStructure</MenuItemName>
+										<ShowShortCut>No</ShowShortCut>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@WAX1424</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>PrintGroup</Name>
+								<ElementPosition>1561806288</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSLoadList</Name>
+										<ElementPosition>1073741823</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<ButtonDisplay>TextOnly</ButtonDisplay>
+										<MenuItemName>WHSLoadList</MenuItemName>
+										<MenuItemType>Output</MenuItemType>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSLoad</Name>
+										<ElementPosition>1431655764</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<ButtonDisplay>TextOnly</ButtonDisplay>
+										<MenuItemName>WHSLoad</MenuItemName>
+										<MenuItemType>Output</MenuItemType>
+										<ShowShortCut>No</ShowShortCut>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormButtonControl">
+										<Name>WHSPickListShipping</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>1789569705</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>Button</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<ButtonDisplay>TextOnly</ButtonDisplay>
+										<ShowShortCut>No</ShowShortCut>
+										<Text>@WAX1388</Text>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@SYS91576</Caption>
+							</AxFormControl>
+						</Controls>
+						<AlignChild>No</AlignChild>
+						<AlignChildren>No</AlignChildren>
+						<ArrangeMethod>Vertical</ArrangeMethod>
+						<Caption>@WAX312</Caption>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormActionPaneTabControl">
+						<Name>ActionPaneTabShipReceive</Name>
+						<ElementPosition>1288490187</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>ActionPaneTab</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<Controls>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ButtonGroupConfirm</Name>
+								<ElementPosition>858993458</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnInboundShipConfirm</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<AutoRefreshData>Yes</AutoRefreshData>
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSInboundShipConfirm</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>Yes</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+										<Text>@TRX2506</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnOutboundShipConfirm</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<AutoRefreshData>Yes</AutoRefreshData>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSOutboundShipConfirm</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<Text>@TRX2507</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnInboundReceivingCompleted</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<MenuItemName>WhsInboundReceivingCompleted</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@TRX1430</Caption>
+								<DataSource>WHSLoadTable</DataSource>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ButtonGroupReceive</Name>
+								<ElementPosition>1288490187</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnProductReceipt</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<AutoRefreshData>Yes</AutoRefreshData>
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSPostPackingSlip</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>No</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+										<Text>@SYS332892</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSPackingStructure</Name>
+										<ElementPosition>1610612733</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSPackingStructure</MenuItemName>
+										<MultiSelect>No</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+										<ShowShortCut>No</ShowShortCut>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@TRX2504</Caption>
+								<DataSource>WHSLoadTable</DataSource>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ShipReceivePrintGroup</Name>
+								<ElementPosition>1717986916</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnBillOfLading</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<MenuItemName>WHSBillOfLadingGenerate</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>Yes</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSSalesPackingSlipPost</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSSalesPackingSlipPost</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>Yes</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnSendASN</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSShipConfirmSendASN</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnPostShipTransfer</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<HelpText>@FieldDescriptions_WHS:WHSLoadPlanningListPage_btnPostShipTransfer</HelpText>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSPostShipTransfer</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<NeedsRecord>Yes</NeedsRecord>
+										<Text>@WAX:PostShipTransferOrder</Text>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@SYS26349</Caption>
+								<DataSource>WHSLoadTable</DataSource>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ReverseButtonGroup</Name>
+								<Type>ButtonGroup</Type>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnReverseShipConfirm</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<HelpText>@FieldDescriptions_WHS:WHSLoadPlanningListPage_btnReverseShipConfirm</HelpText>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<MenuItemName>WHSReverseShipConfirm</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<Text>@WAX:ReverseShipConfirm</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnCancelPackingSlips</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<HelpText>@FieldDescriptions_WHS:WHSLoadPlanningListPage_btnCancelPackingSlips</HelpText>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<MenuItemName>SalesFormLetter_PackingSlipCancel</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>No</MultiSelect>
+										<Text>@WAX:CancelPackSlipBtn</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnCancelProductReceipt</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<HelpText>@FieldDescriptions_WHS:WHSLoadPlanningListPage_btnCancelProductReceipt</HelpText>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<MenuItemName>PurchFormLetter_PackingSlipCancel</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>No</MultiSelect>
+										<Text>@SYS333389</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>btnInboundReverseReceivingCompleted</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSInboundReverseReceivingCompleted</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>No</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+								</Controls>
+								<Caption>@SYS22850</Caption>
+								<DataSource>WHSLoadTable</DataSource>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>HMIMHazardousMaterialDocument</Name>
+								<ConfigurationKey>WHSandTMS</ConfigurationKey>
+								<Type>ButtonGroup</Type>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>HMIMVerifiedGrossMass</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>HMIMVerifiedGrossMass</MenuItemName>
+										<MenuItemType>Output</MenuItemType>
+										<MultiSelect>No</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>HMIMMultimodalDGReport</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>HMIMMultimodalDG</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>No</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>HMIMShipperDeclarationReport</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>HMIMShipperDeclaration</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>No</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>HMIMCarrOfMerchByRoadReport</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>HMIMCarrOfMerchByRoad</MenuItemName>
+										<MenuItemType>Action</MenuItemType>
+										<MultiSelect>No</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>HMIMShipmentSummary</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<ButtonDisplay>TextOnly</ButtonDisplay>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>HMIMShipmentSummary</MenuItemName>
+										<MenuItemType>Output</MenuItemType>
+										<MultiSelect>No</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+								</Controls>
+								<Caption>@SCM:HazardousMaterialDocument</Caption>
+							</AxFormControl>
+						</Controls>
+						<AlignChild>No</AlignChild>
+						<AlignChildren>No</AlignChildren>
+						<ArrangeMethod>Vertical</ArrangeMethod>
+						<Caption>@WAX4800</Caption>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormActionPaneTabControl">
+						<Name>ActionPaneTabTMS</Name>
+						<AutoDeclaration>Yes</AutoDeclaration>
+						<ElementPosition>1717986916</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>ActionPaneTab</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<Controls>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ButtonGroupLoads</Name>
+								<Type>ButtonGroup</Type>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSLoadPlanningWorkbench</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>1073741823</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSLoadPlanningWorkbench</MenuItemName>
+										<ShowShortCut>No</ShowShortCut>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSOutboundLoadPlanningWorkbench</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSOutboundLoadPlanningWorkbench</MenuItemName>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSInboundLoadPlanningWorkbench</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSInboundLoadPlanningWorkbench</MenuItemName>
+									</AxFormControl>
+								</Controls>
+								<Caption>@WAX312</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ButtonGroupTMS</Name>
+								<ElementPosition>613566756</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>TMSRateRouteWorkbench</Name>
+										<ElementPosition>715827882</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>TMSRateRouteWorkbench</MenuItemName>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>ManualRoute</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<NeededPermission>Delete</NeededPermission>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>TMSRouteWorkbench_ManualRoute</MenuItemName>
+										<Text>@WAX4860</Text>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>TMSRouteWorkbench</Name>
+										<ElementPosition>1431655764</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>TMSRouteWorkbench</MenuItemName>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>AddRoute</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<NeededPermission>Delete</NeededPermission>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>TMSAddRouteToLoad</MenuItemName>
+										<Text>@TRX1209</Text>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@WAX4808</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ButtonGroupAppts</Name>
+								<ElementPosition>920350134</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>AppointmentScheduling</Name>
+										<ElementPosition>1431655764</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>TMSAppointment</MenuItemName>
+										<ShowShortCut>No</ShowShortCut>
+										<Text>@TRX33</Text>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@TRX2101</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ButtonGroupTransTender</Name>
+								<ElementPosition>1227133512</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>TransportationTender</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<MenuItemName>TMSTransportationTender</MenuItemName>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@TRX1404</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ButtonGroupHubConsolidation</Name>
+								<AutoDeclaration>Yes</AutoDeclaration>
+								<ElementPosition>1533916890</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>OverrideLocation</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<AutoRefreshData>Yes</AutoRefreshData>
+										<MenuItemName>TMSOverrideHubWarehouse</MenuItemName>
+										<NeedsRecord>Yes</NeedsRecord>
+										<Text>@TRX2103</Text>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@TRX2103</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonGroupControl">
+								<Name>ButtonGroupRelatedInfo</Name>
+								<ElementPosition>1840700268</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Left>0</Left>
+								<Type>ButtonGroup</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>TMSInvoiceJournal</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>858993458</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>TMSInvoiceJournal</MenuItemName>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>TMSFreightBillDetail</Name>
+										<ElementPosition>1288490187</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>TMSFreightBillDetail</MenuItemName>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>TMSTransportationStatus</Name>
+										<ElementPosition>1717986916</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>MenuFunctionButton</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<Big>Yes</Big>
+										<MenuItemName>TMSTransportationStatus</MenuItemName>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>WHSBillOfLading</Name>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>WHSBillOfLading</MenuItemName>
+										<MultiSelect>No</MultiSelect>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>HMIMMultimodalDG</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ConfigurationKey>WHSandTMS</ConfigurationKey>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataSource>WHSLoadTable</DataSource>
+										<MenuItemName>HMIMMultimodalDG</MenuItemName>
+										<NeedsRecord>Yes</NeedsRecord>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>HMIMShipperDeclaration</Name>
+										<ConfigurationKey>WHSandTMS</ConfigurationKey>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<MenuItemName>HMIMShipperDeclaration</MenuItemName>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormMenuFunctionButtonControl">
+										<Name>HMIMCarrOfMerchByRoad</Name>
+										<ConfigurationKey>WHSandTMS</ConfigurationKey>
+										<Type>MenuFunctionButton</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<MenuItemName>HMIMCarrOfMerchByRoad</MenuItemName>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Caption>@SYS111665</Caption>
+							</AxFormControl>
+						</Controls>
+						<AlignChild>No</AlignChild>
+						<AlignChildren>No</AlignChildren>
+						<ArrangeMethod>Vertical</ArrangeMethod>
+						<Caption>@TRX536</Caption>
+					</AxFormControl>
+				</Controls>
+				<AlignChild>No</AlignChild>
+				<AlignChildren>No</AlignChildren>
+				<ArrangeMethod>Vertical</ArrangeMethod>
+			</AxFormControl>
+			<AxFormControl xmlns=""
+				i:type="AxFormGroupControl">
+				<Name>CustomFilterGroup</Name>
+				<Pattern>CustomAndQuickFilters</Pattern>
+				<PatternVersion>1.1</PatternVersion>
+				<Type>Group</Type>
+				<WidthMode>SizeToAvailable</WidthMode>
+				<FormControlExtension
+					i:nil="true" />
+				<Controls>
+					<AxFormControl>
+						<Name>QuickFilter</Name>
+						<FormControlExtension>
+							<Name>QuickFilterControl</Name>
+							<ExtensionComponents />
+							<ExtensionProperties>
+								<AxFormControlExtensionProperty>
+									<Name>targetControlName</Name>
+									<Type>String</Type>
+									<Value>Grid</Value>
+								</AxFormControlExtensionProperty>
+								<AxFormControlExtensionProperty>
+									<Name>defaultColumnName</Name>
+									<Type>String</Type>
+								</AxFormControlExtensionProperty>
+								<AxFormControlExtensionProperty>
+									<Name>placeholderText</Name>
+									<Type>String</Type>
+								</AxFormControlExtensionProperty>
+							</ExtensionProperties>
+						</FormControlExtension>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormCheckBoxControl">
+						<Name>ShowClosed</Name>
+						<AutoDeclaration>Yes</AutoDeclaration>
+						<ElementPosition>1431655764</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>CheckBox</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<Label>@WAX856</Label>
+					</AxFormControl>
+				</Controls>
+				<ArrangeMethod>HorizontalLeft</ArrangeMethod>
+				<FrameType>None</FrameType>
+				<Style>CustomFilter</Style>
+				<ViewEditMode>Edit</ViewEditMode>
+			</AxFormControl>
+			<AxFormControl xmlns=""
+				i:type="AxFormGridControl">
+				<Name>Grid</Name>
+				<AllowEdit>No</AllowEdit>
+				<AutoDeclaration>Yes</AutoDeclaration>
+				<ElementPosition>1610612733</ElementPosition>
+				<FilterExpression>%1</FilterExpression>
+				<Type>Grid</Type>
+				<VerticalSpacing>-1</VerticalSpacing>
+				<FormControlExtension
+					i:nil="true" />
+				<Controls>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>WHSLoadTable_LoadId</Name>
+						<ElementPosition>89478484</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>LoadId</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormCheckBoxControl">
+						<Name>WHSLoadTable_Invalid</Name>
+						<AllowEdit>No</AllowEdit>
+						<ElementPosition>111848105</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Skip>Yes</Skip>
+						<Type>CheckBox</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<BackgroundColor>WindowBackground</BackgroundColor>
+						<DataField>Invalid</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormImageControl">
+						<Name>StagedWork</Name>
+						<AutoDeclaration>Yes</AutoDeclaration>
+						<ElementPosition>134217726</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Height>16</Height>
+						<Type>Image</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<Width>16</Width>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>displayStagedWork</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<Label>@SYS115540</Label>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>WHSLoadTable_InventSiteId</Name>
+						<ElementPosition>335544315</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>InventSiteId</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>WHSLoadTable_InventLocationId</Name>
+						<ElementPosition>402653178</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>InventLocationId</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormComboBoxControl">
+						<Name>WHSLoadTable_LoadDirection</Name>
+						<ElementPosition>469762041</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>ComboBox</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>LoadDirection</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+						<Items />
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormComboBoxControl">
+						<Name>WHSLoadTable_LoadStatus</Name>
+						<ElementPosition>536870904</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>ComboBox</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>LoadStatus</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+						<Items />
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormDateTimeControl">
+						<Name>WHSLoadTable_LoadSchedShipUTCDateTime</Name>
+						<ElementPosition>603979767</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>DateTime</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>LoadSchedShipUTCDateTime</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormDateTimeControl">
+						<Name>WHSLoadTable_LoadShipConfirmUTCDateTime</Name>
+						<ElementPosition>671088630</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>DateTime</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>LoadShipConfirmUTCDateTime</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormIntegerControl">
+						<Name>TotalShipments</Name>
+						<ElementPosition>738197493</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>Integer</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>displayNumberOfShipments</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<Label>@WAX428</Label>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormIntegerControl">
+						<Name>TotalContainers</Name>
+						<ElementPosition>805306356</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>Integer</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>displayNumberOfContainers</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<Label>@WAX1424</Label>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormRealControl">
+						<Name>WHSLoadTable_TotalGrossWeight</Name>
+						<ElementPosition>872415219</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<HelpText>@FieldDescriptions_WHS:WHSLoadPlanningListPage_WHSLoadTable_TotalGrossWeight</HelpText>
+						<Type>Real</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>displayTotalGrossWeight</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<NoOfDecimals>-1</NoOfDecimals>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormRealControl">
+						<Name>WHSLoadTable_ActualGrossWeight</Name>
+						<HelpText>@FieldDescriptions_WHS:WHSLoadPlanningListPage_WHSLoadTable_ActualGrossWeight</HelpText>
+						<Type>Real</Type>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>ActualGrossWeight</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormRealControl">
+						<Name>TotalVolumeInLoad</Name>
+						<ElementPosition>939524082</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<HelpText>@FieldDescriptions_WHS:WHSLoadPlanningListPage_TotalVolumeInLoad</HelpText>
+						<Type>Real</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>displayTotalVolumeInLoad</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<Label>@WAX:TotalOuterVolume_Label</Label>
+						<NoOfDecimals>-1</NoOfDecimals>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormRealControl">
+						<Name>WHSLoadTable_ActualVolume</Name>
+						<HelpText>@FieldDescriptions_WHS:WHSLoadPlanningListPage_WHSLoadTable_ActualVolume</HelpText>
+						<Type>Real</Type>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>ActualVolume</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormRealControl">
+						<Name>TotalValue</Name>
+						<AutoDeclaration>Yes</AutoDeclaration>
+						<ElementPosition>1006632945</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>Real</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<Visible>No</Visible>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>displayTotalValue</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<Label>@SYS30257</Label>
+						<NoOfDecimals>-1</NoOfDecimals>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>CarrierCode</Name>
+						<ElementPosition>1207959534</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>CarrierCode</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>CarrierServiceCode</Name>
+						<ElementPosition>1275068397</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>CarrierServiceCode</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>CarrierGroupCode</Name>
+						<ElementPosition>1342177260</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>CarrierGroupCode</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>ModeCode</Name>
+						<ElementPosition>1409286123</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>ModeCode</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>WHSLoadTable_BrokerCode</Name>
+						<ElementPosition>1476394986</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>BrokerCode</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>EquipmentCode</Name>
+						<ElementPosition>1543503849</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>TMSDisplayEquipmentCode</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>TMSRouteAssignment_RouteId</Name>
+						<ElementPosition>1610612712</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>RouteCode</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>ShipmentId</Name>
+						<ElementPosition>1677721575</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>displayShipment</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>WHSLoadTable_OrderNum</Name>
+						<ElementPosition>1778384869</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>OrderNum</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>WHSLoadTable_AccountNum</Name>
+						<ElementPosition>1879048164</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>AccountNum</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>Wave</Name>
+						<ElementPosition>1946157027</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>displayWave</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormDateTimeControl">
+						<Name>WHSLoadTable_LoadArrivalUTCDateTime</Name>
+						<ElementPosition>2013265890</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>DateTime</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>LoadArrivalUTCDateTime</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>ApptId</Name>
+						<ElementPosition>2080374753</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>tmsDisplayAppointmentId</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormCheckBoxControl">
+						<Name>HasUnreservedQty</Name>
+						<ElementPosition>234881020</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>CheckBox</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<BackgroundColor>WindowBackground</BackgroundColor>
+						<DataMethod>displayHasUnreservedQty</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<Label>@WAX3462</Label>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormCheckBoxControl">
+						<Name>WHSLoadTable_AllowLoadSplitShipConfirm</Name>
+						<Type>CheckBox</Type>
+						<FormControlExtension
+							i:nil="true" />
+						<DataField>AllowLoadSplitShipConfirm</DataField>
+						<DataSource>WHSLoadTable</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormCheckBoxControl">
+						<Name>HasCrossDocking</Name>
+						<HelpText>@FieldDescriptions_WHS:WHSLoadPlanningListPage_HasCrossDocking</HelpText>
+						<Type>CheckBox</Type>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>hasCrossDocking</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<Label>@WAX:PlannedCrossDocking</Label>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormRealControl">
+						<Name>HMIMADRPointsTotal</Name>
+						<ConfigurationKey>HMIMManagement</ConfigurationKey>
+						<Type>Real</Type>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>HMIMADRPointsTotalForLoad</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<Label>@SCM:ADRPointsTotal</Label>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormRealControl">
+						<Name>HMIMLimitedQuantityNetWeight</Name>
+						<ConfigurationKey>HMIMManagement</ConfigurationKey>
+						<Type>Real</Type>
+						<FormControlExtension
+							i:nil="true" />
+						<DataMethod>HMIMLimitedQtyNetWeightForLoad</DataMethod>
+						<DataSource>WHSLoadTable</DataSource>
+						<Label>@SCM:LQNetWeight</Label>
+					</AxFormControl>
+				</Controls>
+				<DataSource>WHSLoadTable</DataSource>
+				<DefaultAction>ViewButton</DefaultAction>
+				<DefaultActionLabel>@SYS122402</DefaultActionLabel>
+			</AxFormControl>
+		</Controls>
+	</Design>
+	<Parts>
+		<AxFormPartReference xmlns="">
+			<Name>WHSLoadAddressFormPart</Name>
+			<DataSource>WHSLoadTable</DataSource>
+			<DataSourceRelation>SelfLink</DataSourceRelation>
+			<ElementPosition>306783378</ElementPosition>
+			<MenuItemName>WHSLoadAddressFormPart</MenuItemName>
+			<RunMode>Remote</RunMode>
+		</AxFormPartReference>
+		<AxFormPartReference xmlns="">
+			<Name>WHSWorkInfoPart</Name>
+			<DataSource>WHSLoadTable</DataSource>
+			<DataSourceRelation>WHSWorkTable.WHSLoadTable</DataSourceRelation>
+			<ElementPosition>613566756</ElementPosition>
+			<MenuItemName>WHSWorkInfoPart</MenuItemName>
+		</AxFormPartReference>
+		<AxFormPartReference xmlns="">
+			<Name>WHSAppointmentFactBox</Name>
+			<DataSource>WHSLoadTable</DataSource>
+			<DataSourceRelation>TMSAppointment.WHSLoadTable</DataSourceRelation>
+			<ElementPosition>1227133512</ElementPosition>
+			<MenuItemName>WHSAppointmentFactBox</MenuItemName>
+		</AxFormPartReference>
+		<AxFormPartReference xmlns="">
+			<Name>WHSRelatedOrdersInfoPart</Name>
+			<DataSource>WHSLoadTable</DataSource>
+			<DataSourceRelation>WHSLoadLine.WHSLoadTable</DataSourceRelation>
+			<ElementPosition>1533916890</ElementPosition>
+			<MenuItemName>WHSRelatedOrdersInfoPart</MenuItemName>
+		</AxFormPartReference>
+		<AxFormPartReference xmlns="">
+			<Name>WHSLoadShipmentFormPart</Name>
+			<DataSource>WHSLoadTable</DataSource>
+			<DataSourceRelation>WHSShipmentTable.WHSLoadTable</DataSourceRelation>
+			<ElementPosition>1840700268</ElementPosition>
+			<MenuItemName>WHSLoadShipmentFormPart</MenuItemName>
+			<RunMode>Remote</RunMode>
+		</AxFormPartReference>
+	</Parts>
+</AxForm>

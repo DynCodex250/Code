@@ -1,0 +1,2847 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AxForm xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns="Microsoft.Dynamics.AX.Metadata.V6">
+	<Name>WHSOnHand</Name>
+	<SourceCode>
+		<Methods xmlns="">
+			<Method>
+				<Name>classDeclaration</Name>
+				<Source><![CDATA[
+[Form]
+public class WHSOnHand extends FormRun
+{
+    InventSiteId                     inventSiteId;
+    InventLocationId                 inventLocationId;
+    WMSLocationId                    wmsLocationId;
+
+    str                              wmsLocationIdFilter;
+
+    WHSOnHandForm                    whsOnHandForm;
+    InventDimCtrl_Frm_WHSOnhand      inventDimFormSetup;
+
+    InventAvailabilityFormCache      inventAvailabilityFormCache;
+
+    #define.CurrentVersion(1)
+    #localmacro.CurrentList
+        inventSiteId,
+        inventLocationId,
+        wmsLocationId
+    #endmacro
+
+}
+]]></Source>
+			</Method>
+			<Method>
+				<Name>filterWorkTable</Name>
+				<Source><![CDATA[
+    void filterWorkTable()
+    {
+        [wmsLocationIdFilter, inventSiteId, inventLocationId] = whsOnHandForm.filterWorkTable(element.args().record());
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>init</Name>
+				<Source><![CDATA[
+    public void init()
+    {
+        whsOnHandForm = new WHSOnHandForm();
+
+        super();
+
+        this.processArgs();
+
+        parmInventSiteId.text(inventSiteId);
+        parmInventLocationId.text(inventLocationId);
+        parmWMSLocationId.text(wmsLocationId);
+
+        element.updateDesign(InventDimFormDesignUpdate::Init);
+
+        inventAvailabilityFormCache = InventAvailabilityFormCache::construct();
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>mustLoadDataBasedOnSettings</Name>
+				<Source><![CDATA[
+    public boolean mustLoadDataBasedOnSettings()
+    {
+        return (controlRefreshAcrossLocations.value() || parmWMSLocationId.valueStr());
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>initParmDefault</Name>
+				<Source><![CDATA[
+    public void initParmDefault()
+    {
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>inventDimCtrl_UpdatedControls</Name>
+				<Source><![CDATA[
+    public void inventDimCtrl_UpdatedControls()
+    {
+        // Parent license plate should only be visible if license plate dimensions is shown.
+        InventDimBottom_DisplayParentLP.visible(element.inventDimSetupObject().parmDimParmVisibleGrid().LicensePlateFlag);
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>inventDimSetupObject</Name>
+				<Source><![CDATA[
+    /// <summary>
+    /// Returns the dimensions display object.
+    /// </summary>
+    /// <returns>
+    /// The dimensions display object
+    /// </returns>
+    public InventDimCtrl_Frm_WHSOnhand inventDimSetupObject()
+    {
+        if (!inventDimFormSetup)
+        {
+            inventDimFormSetup  = InventDimCtrl_Frm_WHSOnhand::newFromForm(element);
+        }
+
+        return inventDimFormSetup;
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>currentInventDim</Name>
+				<Source><![CDATA[
+    private InventDim currentInventDim()
+    {
+        return InventDimBottom;
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>lastValueDataAreaId</Name>
+				<Source><![CDATA[
+    DataAreaId lastValueDataAreaId()
+    {
+        return curext();
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>lastValueDesignName</Name>
+				<Source><![CDATA[
+    private IdentifierName lastValueDesignName()
+    {
+        return '';
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>lastValueElementName</Name>
+				<Source><![CDATA[
+    IdentifierName lastValueElementName()
+    {
+        return formStr(WHSOnHand);
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>lastValueType</Name>
+				<Source><![CDATA[
+    private UtilElementType lastValueType()
+    {
+        return UtilElementType::Form;
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>lastValueUserId</Name>
+				<Source><![CDATA[
+    private UserId lastValueUserId()
+    {
+        return curUserId();
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>pack</Name>
+				<Source><![CDATA[
+    public container pack()
+    {
+        return [#CurrentVersion, #CurrentList, controlRefreshAcrossLocations.value()];
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>run</Name>
+				<Source><![CDATA[
+    public void run()
+    {
+        super();
+
+        if (element.mustLoadDataBasedOnSettings())
+        {
+            wmsLocation_ds.executeQuery();
+        }
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>setBottomRanges</Name>
+				<Source><![CDATA[
+    public void setBottomRanges()
+    {
+        ItemId                  headerItemvalue;
+        QueryBuildDataSource    qbdsInventDimBottom, qbdsInventSumBottom;
+
+        qbdsInventDimBottom = inventDimBottom_ds.queryBuildDataSource();
+
+        //filter bottom based on the current active wmsLocation record
+        qbdsInventDimBottom.clearRanges();
+        qbdsInventDimBottom.addRange(fieldNum(InventDim, InventLocationId)).value(queryValue(wmsLocation.inventLocationId));
+        qbdsInventDimBottom.addRange(fieldNum(InventDim, wmsLocationId)).value(queryValue(wmsLocation.wmsLocationId));
+
+        qbdsInventSumBottom = inventSumBottom_ds.queryBuildDataSource();
+
+        qbdsInventSumBottom.clearRanges();
+        qbdsInventSumBottom.addRange(fieldNum(InventSum, PhysicalInvent)).value('>0');
+        qbdsInventSumBottom.addRange(fieldNum(InventSum, ClosedQty)).value(queryValue(NoYes::No));
+
+        headerItemvalue = headerItemId.valueStr();
+        //if we have a single item on the location then add filter on that since it will speed up the query
+        if (headerItemvalue && headerItemvalue != "@WAX402")
+        {
+            qbdsInventSumBottom.addRange(fieldNum(InventSum, itemId)).value(queryValue(headerItemvalue));
+        }
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>processArgs</Name>
+				<Source><![CDATA[
+    void processArgs()
+    {
+        if (element.args().record())
+        {
+            switch (element.args().dataset())
+            {
+                case tableNum(WHSWorkTable):
+                    this.filterWorkTable();
+                    controlRefreshAcrossLocations.value(NoYes::Yes);
+                    break;
+
+                default:
+                    break;
+            }
+        }
+        else
+        {
+            // If we are being opened with a caller then we don't load all the previous settings since we want to display data based on what was loaded from the filter
+            xSysLastValue::getLast(this);
+        }
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>rightClickModifyQuery</Name>
+				<Source><![CDATA[
+    /// <summary>
+    /// Called if changes have been made in the <c>InventDimParmFixed</c> form
+    /// This method refreshes the grid to reflect the changes
+    /// </summary>
+    void rightClickModifyQuery()
+    {
+        element.inventDimSetupObject().parmDimParmVisible(element.inventDimSetupObject().parmDimParmVisibleGrid());
+        element.inventDimSetupObject().rightClickModifyQueryGroupBy(inventSum_DS);
+
+        inventSumBottom_DS.executeQuery();
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>setRanges</Name>
+				<Source><![CDATA[
+    void setRanges()
+    {
+        // Clear all ranges
+        wmsLocation_ds.queryBuildDataSource().clearRanges();
+        inventDim_ds.queryBuildDataSource().clearRanges();
+        inventSum_ds.queryBuildDataSource().clearRanges();
+
+        // Add a range for the user selected Warehouse
+        wmsLocation_ds.queryBuildDataSource().addRange(fieldNum(WMSLocation, InventLocationId)).value(queryValue(parmInventLocationId.valueStr()));
+
+        if (wmsLocationIdFilter)
+        {
+            wmsLocation_ds.queryBuildDataSource().addRange(fieldNum(WMSLocation, wmsLocationId)).value(wmsLocationIdFilter);
+        }
+        else if (wmsLocationId)
+        {
+            wmsLocation_ds.queryBuildDataSource().addRange(fieldNum(WMSLocation, wmsLocationId)).value(queryValue(wmsLocationId));
+        }
+
+        // Add a range to only get locations with quantity.
+        inventSum_ds.queryBuildDataSource().addRange(fieldNum(InventSum, PhysicalInvent)).value('>0');
+        inventSum_ds.queryBuildDataSource().addRange(fieldNum(InventSum, ClosedQty)).value(queryValue(NoYes::No));
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>unpack</Name>
+				<Source><![CDATA[
+    public boolean unpack(container _packedClass)
+    {
+        boolean             ret;
+        int                 version;
+        int                 refreshAcrossLocations;
+
+        version = conPeek(_packedClass, 1);
+
+        switch (version)
+        {
+            case #CurrentVersion:
+                [version, #CurrentList, refreshAcrossLocations] = _packedClass;
+                ret = true;
+
+                whsOnHandForm.parmInventLocationId(inventLocationId);
+                whsOnHandForm.parmInventSiteId(inventSiteId);
+                
+                break;
+        }
+
+        controlRefreshAcrossLocations.value(refreshAcrossLocations);
+
+        return ret;
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>updateDesign</Name>
+				<Source><![CDATA[
+    /// <summary>
+    /// Updates the dimensions display object.
+    /// </summary>
+    /// <param name="_mode">
+    /// The state of the dimensions display form.
+    /// </param>
+    /// <exception cref="Exception::Error">
+    /// Incorrect parameter for the function.
+    /// </exception>
+    public void updateDesign(InventDimFormDesignUpdate _mode)
+    {
+        InventDimParm inventDimParmLocal;
+
+        switch (_mode)
+        {
+            case InventDimFormDesignUpdate::Init:
+                inventDimParmLocal.setAllProductDimensions();
+                inventDimParmLocal.setAllTrackingDimensions();
+                inventDimParmLocal.InventStatusFlag   = NoYes::Yes;
+                inventDimParmLocal.LicensePlateFlag   = NoYes::Yes;
+                element.inventDimSetupObject().parmDimParmVisibleGrid(inventDimParmLocal);
+                btnQuarantine.multiSelect(true);
+                
+            // do continue
+            case InventDimFormDesignUpdate::Active:
+                element.inventDimSetupObject().formActiveSetup();
+                element.inventDimSetupObject().formSetControls(true);
+
+                var img = InvalidDimensionsWarning.image();
+
+                WHSLocationLicensePlatePositioning_LicensePlatePosition.visible(this.isLicensePlatePositionVisible());
+
+                break;
+
+            default:
+                throw error(strFmt("@SYS54195",funcName()));
+        }
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>task</Name>
+				<Source><![CDATA[
+    public int task(int _taskId)
+    {
+        int ret;
+
+        #Task
+        switch (_taskId)
+        {
+            case #TaskRefresh:
+                WMSLocation_ds.executeQuery();
+                break;
+
+            default:
+                ret = super(_taskId);
+                break;
+        }
+
+        return ret;
+    }
+
+]]></Source>
+			</Method>
+			<Method>
+				<Name>isLicensePlatePositionVisible</Name>
+				<Source><![CDATA[
+    private boolean isLicensePlatePositionVisible()
+    {
+        return DisplayDims_LicensePlateId.isVisible()
+            && WMSLocation.WHSLocationProfile().EnableLocationLicensePlatePositioning;
+    }
+
+]]></Source>
+			</Method>
+		</Methods>
+		<DataSources xmlns="">
+			<DataSource>
+				<Name>WMSLocation</Name>
+				<Methods>
+					<Method>
+						<Name>displayOption</Name>
+						<Source><![CDATA[
+        public void displayOption(Common _record, FormRowDisplayOption _options)
+        {
+            WMSLocation location = _record;
+
+            if (showEmpty.checked() && location.whsLocationIdEmptyIncludeDelta(false))
+            {
+                _options.backColor(0x9CFF00); // Green
+            }
+
+            super(_record, _options);
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>active</Name>
+						<Source><![CDATA[
+        public int active()
+       {
+            int ret;
+
+            ret = super();
+
+            inventSumBottom_ds.executeQuery();
+
+            return ret;
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>executeQuery</Name>
+						<Source><![CDATA[
+        public void executeQuery()
+        {
+            // Update the Detail query
+            element.setRanges();
+
+            inventAvailabilityFormCache.refreshCache();
+
+            super();
+
+            //if we have no locations then call the bottom to set ranges since active wont be called for that case
+            if (!wmsLocation.wmsLocationId)
+            {
+                inventSumBottom_ds.executeQuery();
+            }
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+				<Fields />
+			</DataSource>
+			<DataSource>
+				<Name>InventDimBottom</Name>
+				<Methods>
+					<Method>
+						<Name>displayLicensePlatePosition</Name>
+						<Source><![CDATA[
+        /// <summary>
+        /// Displays the license plate position in the location.
+        /// </summary>
+        display WHSLocationLicensePlatePosition displayLicensePlatePosition(InventDim _inventDim)
+        {
+            return WHSLocationLicensePlatePositioning::find(_inventDim.LicensePlateId).LicensePlatePosition;
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+				<Fields />
+			</DataSource>
+			<DataSource>
+				<Name>InventSumBottom</Name>
+				<Methods>
+					<Method>
+						<Name>init</Name>
+						<Source><![CDATA[
+        /// <summary>
+        /// Initialize the query for the <c>InventSumBottom</c> data source
+        /// </summary>
+        public void init()
+        {
+            super();
+
+            element.inventDimSetupObject().initQueryInventSum(inventSumBottom_DS);
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>availPhysical</Name>
+						<Source><![CDATA[
+        /// <summary>
+        /// Gets the physically available quantity based on the specified on hand record.
+        /// </summary>
+        /// <param name="_inventSum">
+        /// An inventory on hand record.
+        /// </param>
+        /// <returns>
+        /// The physically available quantity.
+        /// </returns>
+        public display InventQtyAvailPhysical availPhysical(InventSum _inventSum)
+        {
+            return inventAvailabilityFormCache.availabilityFromSumJoinedWithDim(_inventSum, inventDimBottom_ds).availPhysical();
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>cwAvailPhysical</Name>
+						<Source><![CDATA[
+        /// <summary>
+        /// Gets the physically available quantity for a catch weight item based on the specified on hand record.
+        /// </summary>
+        /// <param name = "_inventSum">
+        /// And inventory on hand record.
+        /// </param>
+        /// <returns>
+        /// The physically available quantity for a catch weight item.
+        /// </returns>
+        public display PdsCWAvailPhysical cwAvailPhysical(InventSum _inventSum)
+        {
+            if (!PdsGlobal::pdsIsCWItem(_inventSum.ItemId))
+            {
+                return 0;
+            }
+
+            return inventAvailabilityFormCache.cwSpecificAvailabilityFromSumJoinedWithDim(_inventSum, inventDimBottom_ds).pdsCWAvailPhysical();
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>executeQuery</Name>
+						<Source><![CDATA[
+        /// <summary>
+        /// Modifies the query to group by the fields selected in the <c>InventDimParmFixed</c> form
+        /// </summary>
+        public void executeQuery()
+        {
+            element.setBottomRanges();
+            element.inventDimSetupObject().modifyQuery(inventSumBottom_DS,inventDimBottom_DS);
+
+            super();
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>active</Name>
+						<Source><![CDATA[
+        public int active()
+        {
+            int ret;
+
+            ret = super();
+
+            element.updateDesign(InventDimFormDesignUpdate::Active);
+
+            return ret;
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>inventDim</Name>
+						<Source><![CDATA[
+        InventDim inventDim()
+        {
+            return inventDimBottom;
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>displayInvalidDimensionWarning</Name>
+						<Source><![CDATA[
+        /// <summary>
+        /// Check if there if the selected dimension set creates a hole in the reservation hierarchy.
+        /// </summary>
+        /// <param name="_inventSum">
+        /// The <c>InventSum</c> datasource's table buffer.
+        /// </param>
+        /// <returns>
+        /// A warning icon if the dimension setup is invalid, otherwise a blank icon.
+        /// </returns>
+        public display container displayInvalidDimensionWarning(InventSum _inventSum)
+        {
+            InventDim   inventDimLoc;
+            container   invalidBlankDims;
+            container   ret = conNull();
+
+            inventDimLoc.data(_inventSum.joinChild());
+            invalidBlankDims = WHSReservationHierarchyInventDimUtil::getNotAllowedBlankDimInHierarchy(_inventSum.inventTable(), inventDimLoc);
+
+            if (invalidBlankDims != conNull())
+            {
+                ret = ImageReference::constructForSymbol(ImageReferenceSymbol::HighPriority).pack();
+            }
+
+            return ret;
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>displayAvailPhysExactDims</Name>
+						<Source><![CDATA[
+        /// <summary>
+        /// Find the available physical inventory for the displayed dimension set.
+        /// </summary>
+        /// <param name="_inventSum">
+        /// The <c>InventSum</c> datasource's table buffer.
+        /// </param>
+        /// <returns>
+        /// The available physical quantity for the exact dimension set displayed.
+        /// </returns>
+        public display InventQtyAvailPhysical displayAvailPhysExactDims(InventSum _inventSum)
+        {
+            InventDim joinedInventDim;
+            Qty       availPhysical;
+            #ResAppl
+
+            joinedInventDim.data(_inventSum.joinChild());
+            availPhysical = WHSInventReserve::findByInventDim(_inventSum.ItemId, joinedInventDim).AvailPhysical;
+
+            if (availPhysical == 0)
+            {
+                if (WHSReservationHierarchyInventDimUtil::getNotAllowedBlankDimInHierarchy(_inventSum.inventTable(), joinedInventDim) != conNull())
+                {
+                    container image = ImageReference::constructForSymbol(ImageReferenceSymbol::HighPriority).pack();
+                    InvalidDimensionsWarning.imageLocation(SysImageLocation::Symbol);
+                    InvalidDimensionsWarning.normalImage(ImageReferenceSymbol::HighPriority);
+                }
+            }
+            else
+            {
+                InvalidDimensionsWarning.normalImage('');
+            }
+
+            return availPhysical;
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>displayCWAvailPhysExactDims</Name>
+						<Source><![CDATA[
+        /// <summary>
+        /// Find the available physical inventory for the displayed dimension set for a catch weight item.
+        /// </summary>
+        /// <param name="_inventSum">
+        /// The <c>InventSum</c> datasource's table buffer.
+        /// </param>
+        /// <returns>
+        /// The available physical quantity for the exact dimension set displayed.
+        /// </returns>
+        public display PdsCWQty displayCWAvailPhysExactDims(InventSum _inventSum)
+        {
+            if (!PdsGlobal::pdsIsCWItem(_inventSum.ItemId))
+            {
+                return 0;
+            }
+
+            InventDim joinedInventDim;
+            PdsCWQty  cwAvailPhysical;
+            #ResAppl
+
+            joinedInventDim.data(_inventSum.joinChild());
+            cwAvailPhysical = WHSInventReserve::findByInventDim(_inventSum.ItemId, joinedInventDim).CWAvailPhysical;
+
+            if (cwAvailPhysical == 0)
+            {
+                if (WHSReservationHierarchyInventDimUtil::getNotAllowedBlankDimInHierarchy(_inventSum.inventTable(), joinedInventDim) != conNull())
+                {
+                    container image = ImageReference::constructForSymbol(ImageReferenceSymbol::HighPriority).pack();
+                    InvalidDimensionsWarning.imageLocation(SysImageLocation::Symbol);
+                    InvalidDimensionsWarning.normalImage(ImageReferenceSymbol::HighPriority);
+                }
+            }
+            else
+            {
+                InvalidDimensionsWarning.normalImage('');
+            }
+
+            return cwAvailPhysical;
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>write</Name>
+						<Source><![CDATA[
+        public void write()
+        {
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+				<Fields />
+			</DataSource>
+		</DataSources>
+		<DataControls xmlns="">
+			<Control>
+				<Name>ButtonSetDefault</Name>
+				<Type>Button</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        void clicked()
+        {
+            super();
+
+            xSysLastValue::saveLast(element);
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>ParmInventSiteId</Name>
+				<Type>String</Type>
+				<Methods>
+					<Method>
+						<Name>modified</Name>
+						<Source><![CDATA[
+        public boolean modified()
+        {
+            boolean ret;
+
+            ret = super();
+
+            inventSiteId = parmInventSiteId.valueStr();
+
+            //clear warehouse and location when site changes
+            parmInventLocationId.text('');
+            inventLocationId = '';
+            parmWMSLocationId.text('');
+            wmsLocationId = '';
+
+            whsOnHandForm.parmInventSiteId(inventSiteId);
+            whsOnHandForm.parmInventLocationId(inventLocationId);
+
+            if (element.mustLoadDataBasedOnSettings())
+            {
+                wmsLocation_ds.executeQuery();
+            }
+
+            return ret;
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>ParmInventLocationId</Name>
+				<Type>String</Type>
+				<Methods>
+					<Method>
+						<Name>lookup</Name>
+						<Source><![CDATA[
+        public void lookup()
+        {
+            InventLocation::lookupWHSWarehouses(this, inventSiteId);
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>modified</Name>
+						<Source><![CDATA[
+        public boolean modified()
+        {
+            boolean ret;
+
+            ret = super();
+
+            inventLocationId    = parmInventLocationId.valueStr();
+            inventSiteId        = InventLocation::find(inventLocationId).InventSiteId;
+            parmInventSiteId.text(inventSiteId);
+
+            if (element.mustLoadDataBasedOnSettings())
+            {
+                wmsLocation_ds.executeQuery();
+            }
+
+            whsOnHandForm.parmInventLocationId(inventLocationId);
+            whsOnHandForm.parmInventSiteId(inventSiteId);
+
+            return ret;
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>ParmWMSLocationId</Name>
+				<Type>String</Type>
+				<Methods>
+					<Method>
+						<Name>lookup</Name>
+						<Source><![CDATA[
+        public void lookup()
+        {
+            WMSLocation::lookupLocationId(this, parmInventLocationId.valueStr());
+        }
+
+]]></Source>
+					</Method>
+					<Method>
+						<Name>modified</Name>
+						<Source><![CDATA[
+        public boolean modified()
+        {
+            boolean ret;
+
+            ret = super();
+
+            wmsLocationId = parmWmsLocationId.valueStr();
+
+            if (element.mustLoadDataBasedOnSettings())
+            {
+                wmsLocation_ds.executeQuery();
+            }
+
+            return ret;
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>ShowEmpty</Name>
+				<Type>CheckBox</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        public void clicked()
+        {
+            super();
+
+            if (this.checked())
+            {
+                inventDim_ds.query().dataSourceTable(tableNum(InventDim)).enabled(false);
+                inventSum_ds.query().dataSourceTable(tableNum(InventSum)).enabled(false);
+            }
+            else
+            {
+                inventDim_ds.query().dataSourceTable(tableNum(InventDim)).enabled(true);
+                inventSum_ds.query().dataSourceTable(tableNum(InventSum)).enabled(true);
+            }
+
+            wmsLocation_ds.executeQuery();
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>ControlRefreshAcrossLocations</Name>
+				<Type>CheckBox</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        public void clicked()
+        {
+            super();
+
+            if (element.mustLoadDataBasedOnSettings())
+            {
+                wmsLocation_ds.executeQuery();
+            }
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+			<Control>
+				<Name>btnQuarantine</Name>
+				<Type>Button</Type>
+				<Methods>
+					<Method>
+						<Name>clicked</Name>
+						<Source><![CDATA[
+        void clicked()
+        {
+            MultiSelectionHelper helper = MultiSelectionHelper::construct();
+            helper.parmDatasource(InventSumBottom_DS);
+
+            whsOnHandForm.btnQuarantineMultiSelect_clicked(helper);
+
+            inventAvailabilityFormCache.refreshCache();
+
+            InventSumBottom_DS.executeQuery();
+        }
+
+]]></Source>
+					</Method>
+				</Methods>
+			</Control>
+		</DataControls>
+		<Members xmlns="" />
+	</SourceCode>
+	<DataSources>
+		<AxFormDataSource xmlns="">
+			<Name>WMSLocation</Name>
+			<Table>WMSLocation</Table>
+			<Fields>
+				<AxFormDataSourceField>
+					<DataField>absoluteHeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>aisleId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>checkText</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>dataAreaId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>depth</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>height</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>inputBlockingCauseId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>inputLocation</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>inventLocationId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LastCountedUTCDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>level</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>locationType</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LocProfileId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>manualName</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>manualSortCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>maxPalletCount</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>maxVolume</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>maxWeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>MCRReservationPriority</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>outputBlockingCauseId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>palletTypeGroupId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>pickingAreaId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>position</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>rack</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>RecId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>sortCode</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>storeAreaId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TableId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>volume</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>width</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>wMSLocationId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ZoneId</DataField>
+				</AxFormDataSourceField>
+			</Fields>
+			<ReferencedDataSources />
+			<AutoSearch>No</AutoSearch>
+			<AllowCreate>No</AllowCreate>
+			<AllowDelete>No</AllowDelete>
+			<AllowEdit>No</AllowEdit>
+			<InsertAtEnd>No</InsertAtEnd>
+			<InsertIfEmpty>No</InsertIfEmpty>
+			<DataSourceLinks />
+			<DerivedDataSources />
+		</AxFormDataSource>
+		<AxFormDataSource xmlns="">
+			<Name>WHSLocationProfile</Name>
+			<Table>WHSLocationProfile</Table>
+			<Fields>
+				<AxFormDataSourceField>
+					<DataField>AllowedContainerTypeGroup</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>AllowMixedBatches</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>AllowMixedItems</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>AllowMixedStatus</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>AllowNegative</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>CycleCountable</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>dataAreaId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Depth</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>DimensionFillPCT</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>DisplayMobileDeviceLocationLicensePlatePositioning</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>DockMgmtProfileId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>EnableItemInLocationUpdate</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>EnableLocationActivityDateTimeUpdate</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>EnableLocationLicensePlatePositioning</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>EnableLocationStatusUpdate</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>FillPercentage</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>GenCheckDigit</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Height</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>IgnoreBatchDates</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LocFormatId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LocProfileId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LocProfileName</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LocType</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LPControlled</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>MaxWeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedBy</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Partition</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>RecId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ReplenishmentExceedLocationCapacity</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ReplenishmentOverflowCapacityPercent</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ReplenishmentOverflowCapacityQty</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ReplenishmentOverflowCapacityUnit</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>StorageUnit</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TableId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TotalVolume</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>UsableDepth</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>UsableHeight</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>UsableVolume</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>UsableWidth</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Width</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>WorkAvailabilityThresholdType</DataField>
+				</AxFormDataSourceField>
+			</Fields>
+			<ReferencedDataSources />
+			<JoinSource>WMSLocation</JoinSource>
+			<LinkType>InnerJoin</LinkType>
+			<AllowCreate>No</AllowCreate>
+			<AllowDelete>No</AllowDelete>
+			<AllowEdit>No</AllowEdit>
+			<InsertAtEnd>No</InsertAtEnd>
+			<InsertIfEmpty>No</InsertIfEmpty>
+			<DataSourceLinks />
+			<DerivedDataSources />
+		</AxFormDataSource>
+		<AxFormDataSource xmlns="">
+			<Name>InventDim</Name>
+			<Table>InventDim</Table>
+			<Fields>
+				<AxFormDataSourceField>
+					<DataField>configId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>createdDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>dataAreaId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>inventBatchId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventColorId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventVersionId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>inventDimId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventGtdId_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventLocationId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventOwnerId_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventProfileId_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>inventSerialId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventSiteId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventSizeId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventStatusId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventStyleId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LicensePlateId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedBy</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>RecId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>SHA1Hash</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TableId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>wMSLocationId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>wMSPalletId</DataField>
+				</AxFormDataSourceField>
+			</Fields>
+			<ReferencedDataSources />
+			<JoinSource>WMSLocation</JoinSource>
+			<LinkType>ExistJoin</LinkType>
+			<AllowCreate>No</AllowCreate>
+			<AllowDelete>No</AllowDelete>
+			<AllowEdit>No</AllowEdit>
+			<InsertAtEnd>No</InsertAtEnd>
+			<InsertIfEmpty>No</InsertIfEmpty>
+			<DataSourceLinks />
+			<DerivedDataSources />
+		</AxFormDataSource>
+		<AxFormDataSource xmlns="">
+			<Name>InventSum</Name>
+			<Table>InventSum</Table>
+			<Fields>
+				<AxFormDataSourceField>
+					<DataField>Arrived</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>AvailOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>AvailPhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Closed</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ClosedQty</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>dataAreaId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Deducted</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventDimId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ItemId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LastUpdDateExpected</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LastUpdDatePhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>OnOrder</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Ordered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWArrived</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWAvailOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWAvailPhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWDeducted</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWOnOrder</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWPhysicalInvent</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWPicked</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWPostedQty</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWQuotationIssue</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWQuotationReceipt</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWReceived</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWRegistered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWReservOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWReservPhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PhysicalInvent</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PhysicalValue</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PhysicalValueSecCur_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Picked</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PostedQty</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PostedValue</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PostedValueSecCur_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>QuotationIssue</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>QuotationReceipt</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Received</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>RecId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Registered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ReservOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ReservPhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TableId</DataField>
+				</AxFormDataSourceField>
+			</Fields>
+			<ReferencedDataSources />
+			<JoinSource>InventDim</JoinSource>
+			<LinkType>ExistJoin</LinkType>
+			<AllowCreate>No</AllowCreate>
+			<AllowDelete>No</AllowDelete>
+			<AllowEdit>No</AllowEdit>
+			<InsertAtEnd>No</InsertAtEnd>
+			<InsertIfEmpty>No</InsertIfEmpty>
+			<DataSourceLinks />
+			<DerivedDataSources />
+		</AxFormDataSource>
+		<AxFormDataSource xmlns="">
+			<Name>InventDimBottom</Name>
+			<Table>InventDim</Table>
+			<Fields>
+				<AxFormDataSourceField>
+					<DataField>configId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>createdDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>dataAreaId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>inventBatchId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventColorId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventVersionId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>inventDimId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventGtdId_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventLocationId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventOwnerId_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventProfileId_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>inventSerialId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventSiteId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventSizeId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventStatusId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventStyleId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LicensePlateId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedBy</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>RecId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>SHA1Hash</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TableId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>wMSLocationId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>wMSPalletId</DataField>
+				</AxFormDataSourceField>
+			</Fields>
+			<ReferencedDataSources />
+			<JoinSource>InventSumBottom</JoinSource>
+			<LinkType>InnerJoin</LinkType>
+			<AllowCreate>No</AllowCreate>
+			<AllowDelete>No</AllowDelete>
+			<AllowEdit>No</AllowEdit>
+			<InsertAtEnd>No</InsertAtEnd>
+			<InsertIfEmpty>No</InsertIfEmpty>
+			<DataSourceLinks />
+			<DerivedDataSources />
+		</AxFormDataSource>
+		<AxFormDataSource xmlns="">
+			<Name>InventSumBottom</Name>
+			<Table>InventSum</Table>
+			<Fields>
+				<AxFormDataSourceField>
+					<DataField>Arrived</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>AvailOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>AvailPhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Closed</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ClosedQty</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>dataAreaId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Deducted</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>InventDimId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ItemId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LastUpdDateExpected</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>LastUpdDatePhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>modifiedDateTime</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>OnOrder</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Ordered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWArrived</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWAvailOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWAvailPhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWDeducted</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWOnOrder</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWPhysicalInvent</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWPicked</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWPostedQty</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWQuotationIssue</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWQuotationReceipt</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWReceived</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWRegistered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWReservOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PdsCWReservPhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PhysicalInvent</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PhysicalValue</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PhysicalValueSecCur_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Picked</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PostedQty</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PostedValue</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>PostedValueSecCur_RU</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>QuotationIssue</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>QuotationReceipt</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Received</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>RecId</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>Registered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ReservOrdered</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>ReservPhysical</DataField>
+				</AxFormDataSourceField>
+				<AxFormDataSourceField>
+					<DataField>TableId</DataField>
+				</AxFormDataSourceField>
+			</Fields>
+			<ReferencedDataSources />
+			<AutoSearch>No</AutoSearch>
+			<AllowCreate>No</AllowCreate>
+			<AllowDelete>No</AllowDelete>
+			<AllowEdit>No</AllowEdit>
+			<InsertAtEnd>No</InsertAtEnd>
+			<InsertIfEmpty>No</InsertIfEmpty>
+			<DataSourceLinks />
+			<DerivedDataSources />
+		</AxFormDataSource>
+	</DataSources>
+	<Design>
+		<Caption xmlns="">@WAX1345</Caption>
+		<Height xmlns="">0</Height>
+		<HeightMode xmlns="">Column</HeightMode>
+		<Pattern xmlns="">TaskParentChild</Pattern>
+		<PatternVersion xmlns="">1.2</PatternVersion>
+		<ShowDeleteButton xmlns="">No</ShowDeleteButton>
+		<ShowNewButton xmlns="">No</ShowNewButton>
+		<ViewEditMode xmlns="">View</ViewEditMode>
+		<Width xmlns="">0</Width>
+		<WidthMode xmlns="">Column</WidthMode>
+		<Controls xmlns="">
+			<AxFormControl xmlns=""
+				i:type="AxFormActionPaneControl">
+				<Name>ActionPane</Name>
+				<ElementPosition>286331152</ElementPosition>
+				<FilterExpression>%1</FilterExpression>
+				<HeightMode>Auto</HeightMode>
+				<Type>ActionPane</Type>
+				<VerticalSpacing>-1</VerticalSpacing>
+				<Width>0</Width>
+				<FormControlExtension
+					i:nil="true" />
+				<Controls>
+					<AxFormControl xmlns=""
+						i:type="AxFormButtonGroupControl">
+						<Name>ButtonGroupTop</Name>
+						<ElementPosition>1073741822</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<HeightMode>Auto</HeightMode>
+						<Left>0</Left>
+						<Type>ButtonGroup</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<WidthMode>Auto</WidthMode>
+						<FormControlExtension
+							i:nil="true" />
+						<Controls>
+							<AxFormControl xmlns=""
+								i:type="AxFormMenuFunctionButtonControl">
+								<Name>WHSWorkTable</Name>
+								<ElementPosition>1431655764</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<HeightMode>Auto</HeightMode>
+								<Type>MenuFunctionButton</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<WidthMode>Auto</WidthMode>
+								<FormControlExtension
+									i:nil="true" />
+								<ButtonDisplay>TextOnly</ButtonDisplay>
+								<DataSource>WMSLocation</DataSource>
+								<MenuItemName>WHSWorkTable</MenuItemName>
+							</AxFormControl>
+						</Controls>
+						<ArrangeMethod>Vertical</ArrangeMethod>
+						<DataSource>WMSLocation</DataSource>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormButtonGroupControl">
+						<Name>ButtonGroupParms</Name>
+						<ElementPosition>1610612733</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<HeightMode>Auto</HeightMode>
+						<Left>0</Left>
+						<Type>ButtonGroup</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<WidthMode>Auto</WidthMode>
+						<FormControlExtension
+							i:nil="true" />
+						<Controls>
+							<AxFormControl xmlns=""
+								i:type="AxFormButtonControl">
+								<Name>ButtonSetDefault</Name>
+								<ElementPosition>1431655764</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<HeightMode>Auto</HeightMode>
+								<Type>Button</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<WidthMode>Auto</WidthMode>
+								<FormControlExtension
+									i:nil="true" />
+								<ButtonDisplay>TextOnly</ButtonDisplay>
+								<Text>@WAX1341</Text>
+							</AxFormControl>
+						</Controls>
+						<ArrangeMethod>Vertical</ArrangeMethod>
+					</AxFormControl>
+				</Controls>
+				<AlignChild>No</AlignChild>
+				<AlignChildren>No</AlignChildren>
+				<ArrangeMethod>Vertical</ArrangeMethod>
+			</AxFormControl>
+			<AxFormControl xmlns=""
+				i:type="AxFormGroupControl">
+				<Name>GroupParms</Name>
+				<ElementPosition>572662304</ElementPosition>
+				<FilterExpression>%1</FilterExpression>
+				<Pattern>CustomFilters</Pattern>
+				<PatternVersion>1.1</PatternVersion>
+				<Type>Group</Type>
+				<VerticalSpacing>-1</VerticalSpacing>
+				<WidthMode>SizeToAvailable</WidthMode>
+				<FormControlExtension
+					i:nil="true" />
+				<Controls>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>ParmInventSiteId</Name>
+						<AutoDeclaration>Yes</AutoDeclaration>
+						<ElementPosition>715827882</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<ExtendedDataType>InventSiteId</ExtendedDataType>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>ParmInventLocationId</Name>
+						<AutoDeclaration>Yes</AutoDeclaration>
+						<ElementPosition>894784852</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>String</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<ExtendedDataType>InventLocationId</ExtendedDataType>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormStringControl">
+						<Name>ParmWMSLocationId</Name>
+						<AutoDeclaration>Yes</AutoDeclaration>
+						<Type>String</Type>
+						<FormControlExtension
+							i:nil="true" />
+						<ExtendedDataType>WMSLocationId</ExtendedDataType>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormCheckBoxControl">
+						<Name>ShowEmpty</Name>
+						<AutoDeclaration>Yes</AutoDeclaration>
+						<ElementPosition>1073741823</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Type>CheckBox</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<FormControlExtension
+							i:nil="true" />
+						<Label>@WAX1462</Label>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormCheckBoxControl">
+						<Name>ControlRefreshAcrossLocations</Name>
+						<AutoDeclaration>Yes</AutoDeclaration>
+						<Type>CheckBox</Type>
+						<FormControlExtension
+							i:nil="true" />
+						<Label>@WAX:RefreshAcrossLocations</Label>
+					</AxFormControl>
+				</Controls>
+				<ArrangeMethod>HorizontalLeft</ArrangeMethod>
+				<FrameType>None</FrameType>
+				<Style>CustomFilter</Style>
+				<ViewEditMode>Edit</ViewEditMode>
+			</AxFormControl>
+			<AxFormControl xmlns=""
+				i:type="AxFormTabControl">
+				<Name>TabTop</Name>
+				<AlignControl>No</AlignControl>
+				<ElementPosition>1073741822</ElementPosition>
+				<FilterExpression>%1</FilterExpression>
+				<Type>Tab</Type>
+				<VerticalSpacing>-1</VerticalSpacing>
+				<FormControlExtension
+					i:nil="true" />
+				<Controls>
+					<AxFormControl xmlns=""
+						i:type="AxFormTabPageControl">
+						<Name>TabOverviewTop</Name>
+						<ElementPosition>1073741822</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Height>0</Height>
+						<HeightMode>SizeToAvailable</HeightMode>
+						<Pattern>ToolbarList</Pattern>
+						<PatternVersion>1.2</PatternVersion>
+						<Type>TabPage</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<Width>0</Width>
+						<WidthMode>SizeToAvailable</WidthMode>
+						<FormControlExtension
+							i:nil="true" />
+						<Controls>
+							<AxFormControl xmlns=""
+								i:type="AxFormGridControl">
+								<Name>GridOnHand</Name>
+								<AllowEdit>No</AllowEdit>
+								<ElementPosition>1073741822</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Type>Grid</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WMSLocation_wMSLocationId</Name>
+										<ElementPosition>613566756</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>wMSLocationId</DataField>
+										<DataSource>WMSLocation</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WMSLocation_ZoneId</Name>
+										<ElementPosition>920350134</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>ZoneId</DataField>
+										<DataSource>WMSLocation</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WMSLocation_LocProfileId</Name>
+										<ElementPosition>1227133512</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>LocProfileId</DataField>
+										<DataSource>WMSLocation</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WHSLocationProfile_LocType</Name>
+										<ElementPosition>1533916890</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>LocType</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WMSLocation_checkText</Name>
+										<ElementPosition>1840700268</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>checkText</DataField>
+										<DataSource>WMSLocation</DataSource>
+									</AxFormControl>
+								</Controls>
+								<DataSource>WMSLocation</DataSource>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormGroupControl">
+								<Name>LocationTotals</Name>
+								<Pattern>FieldsFieldGroups</Pattern>
+								<PatternVersion>1.1</PatternVersion>
+								<Type>Group</Type>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>HeaderItemId</Name>
+										<AllowEdit>No</AllowEdit>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>1073741822</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>whsDisplayItemId</DataMethod>
+										<DataSource>WMSLocation</DataSource>
+									</AxFormControl>
+								</Controls>
+								<ColumnsMode>Fill</ColumnsMode>
+								<Style>BorderedGroup</Style>
+							</AxFormControl>
+						</Controls>
+						<Caption>@SYS20394</Caption>
+						<Scrollbars>Auto</Scrollbars>
+					</AxFormControl>
+					<AxFormControl xmlns=""
+						i:type="AxFormTabPageControl">
+						<Name>TabProfile</Name>
+						<ElementPosition>1610612733</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<HeightMode>SizeToAvailable</HeightMode>
+						<Pattern>FieldsFieldGroups</Pattern>
+						<PatternVersion>1.1</PatternVersion>
+						<Type>TabPage</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<WidthMode>SizeToAvailable</WidthMode>
+						<FormControlExtension
+							i:nil="true" />
+						<Controls>
+							<AxFormControl xmlns=""
+								i:type="AxFormGroupControl">
+								<Name>GroupGeneralInfo</Name>
+								<ElementPosition>858993458</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Type>Group</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WHSLocationProfile_LocProfileId</Name>
+										<ElementPosition>715827882</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>LocProfileId</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WHSLocationProfile_LocProfileName</Name>
+										<ElementPosition>1073741823</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>LocProfileName</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WHSLocationProfile_LocFormatId</Name>
+										<ElementPosition>1431655764</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>LocFormatId</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WHSLocationProfile_LocType1</Name>
+										<ElementPosition>1789569705</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>LocType</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+									</AxFormControl>
+								</Controls>
+								<Breakable>No</Breakable>
+								<Caption>@WAX1467</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormGroupControl">
+								<Name>GroupPhysDims</Name>
+								<ElementPosition>1288490187</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Type>Group</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>WHSLocationProfile_Height</Name>
+										<ElementPosition>477218588</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>Real</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>Height</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+										<NoOfDecimals>-1</NoOfDecimals>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>WHSLocationProfile_Width</Name>
+										<ElementPosition>715827882</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>Real</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>Width</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+										<NoOfDecimals>-1</NoOfDecimals>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>WHSLocationProfile_Depth</Name>
+										<ElementPosition>954437176</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>Real</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>Depth</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+										<NoOfDecimals>-1</NoOfDecimals>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>WHSLocationProfile_UsableHeight</Name>
+										<ElementPosition>1193046470</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>Real</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>Height</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+										<NoOfDecimals>-1</NoOfDecimals>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>WHSLocationProfile_UsableWidth</Name>
+										<ElementPosition>1431655764</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>Real</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>Width</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+										<NoOfDecimals>-1</NoOfDecimals>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>WHSLocationProfile_UsableDepth</Name>
+										<ElementPosition>1670265058</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>Real</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>UsableDepth</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+										<NoOfDecimals>-1</NoOfDecimals>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>WHSLocationProfile_MaxWeight</Name>
+										<ElementPosition>1908874352</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>Real</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>MaxWeight</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+										<NoOfDecimals>-1</NoOfDecimals>
+									</AxFormControl>
+								</Controls>
+								<Breakable>No</Breakable>
+								<Caption>@WAX1466</Caption>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormGroupControl">
+								<Name>GroupOtherProps</Name>
+								<ElementPosition>1717986916</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Type>Group</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormCheckBoxControl">
+										<Name>WHSLocationProfile_LPControlled</Name>
+										<ElementPosition>715827882</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>CheckBox</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>LPControlled</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormCheckBoxControl">
+										<Name>WHSLocationProfile_AllowMixedItems</Name>
+										<ElementPosition>1073741823</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>CheckBox</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>AllowMixedItems</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormCheckBoxControl">
+										<Name>WHSLocationProfile_AllowMixedBatches</Name>
+										<ElementPosition>1431655764</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>CheckBox</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>AllowMixedBatches</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormCheckBoxControl">
+										<Name>WHSLocationProfile_GenCheckDigit</Name>
+										<ElementPosition>1789569705</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<Type>CheckBox</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>GenCheckDigit</DataField>
+										<DataSource>WHSLocationProfile</DataSource>
+									</AxFormControl>
+								</Controls>
+								<Breakable>No</Breakable>
+								<Caption>@WAX1470</Caption>
+							</AxFormControl>
+						</Controls>
+						<ColumnsMode>Fill</ColumnsMode>
+						<Caption>@WAX1469</Caption>
+						<Scrollbars>Auto</Scrollbars>
+					</AxFormControl>
+				</Controls>
+				<AlignChild>No</AlignChild>
+				<ArrangeMethod>Vertical</ArrangeMethod>
+			</AxFormControl>
+			<AxFormControl xmlns=""
+				i:type="AxFormGroupControl">
+				<Name>ParentChildSplitter</Name>
+				<Type>Group</Type>
+				<FormControlExtension
+					i:nil="true" />
+				<Controls />
+				<Style>SplitterHorizontalContainer</Style>
+			</AxFormControl>
+			<AxFormControl xmlns=""
+				i:type="AxFormTabControl">
+				<Name>TabBottom</Name>
+				<AlignControl>No</AlignControl>
+				<ElementPosition>1073741822</ElementPosition>
+				<FilterExpression>%1</FilterExpression>
+				<Type>Tab</Type>
+				<VerticalSpacing>-1</VerticalSpacing>
+				<FormControlExtension
+					i:nil="true" />
+				<Controls>
+					<AxFormControl xmlns=""
+						i:type="AxFormTabPageControl">
+						<Name>TabOverviewBottom</Name>
+						<ElementPosition>1431655764</ElementPosition>
+						<FilterExpression>%1</FilterExpression>
+						<Height>0</Height>
+						<HeightMode>SizeToAvailable</HeightMode>
+						<Pattern>ToolbarList</Pattern>
+						<PatternVersion>1.2</PatternVersion>
+						<Type>TabPage</Type>
+						<VerticalSpacing>-1</VerticalSpacing>
+						<Width>0</Width>
+						<WidthMode>SizeToAvailable</WidthMode>
+						<FormControlExtension
+							i:nil="true" />
+						<Controls>
+							<AxFormControl xmlns=""
+								i:type="AxFormActionPaneControl">
+								<Name>ActionPaneBottom</Name>
+								<ElementPosition>954437176</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Type>ActionPane</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormActionPaneTabControl">
+										<Name>ActionPaneTabBottom</Name>
+										<ElementPosition>1431655764</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>ActionPaneTab</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<Controls>
+											<AxFormControl xmlns=""
+												i:type="AxFormButtonGroupControl">
+												<Name>ButtonGroupBottom</Name>
+												<ElementPosition>1431655764</ElementPosition>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Left>0</Left>
+												<Type>ButtonGroup</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<Controls>
+													<AxFormControl xmlns=""
+														i:type="AxFormMenuFunctionButtonControl">
+														<Name>InventTransItemIdx</Name>
+														<ElementPosition>1073741822</ElementPosition>
+														<FilterExpression>%1</FilterExpression>
+														<HeightMode>Auto</HeightMode>
+														<Type>MenuFunctionButton</Type>
+														<VerticalSpacing>-1</VerticalSpacing>
+														<WidthMode>Auto</WidthMode>
+														<FormControlExtension
+															i:nil="true" />
+														<ButtonDisplay>TextOnly</ButtonDisplay>
+														<DataSource>InventSumBottom</DataSource>
+														<MenuItemName>InventTransItemIdx</MenuItemName>
+														<MultiSelect>No</MultiSelect>
+														<SaveRecord>No</SaveRecord>
+													</AxFormControl>
+													<AxFormControl xmlns=""
+														i:type="AxFormMenuFunctionButtonControl">
+														<Name>WHSWarehouseTransactions</Name>
+														<ConfigurationKey>WHSandTMS</ConfigurationKey>
+														<HeightMode>Auto</HeightMode>
+														<Type>MenuFunctionButton</Type>
+														<WidthMode>Auto</WidthMode>
+														<FormControlExtension
+															i:nil="true" />
+														<ButtonDisplay>TextOnly</ButtonDisplay>
+														<DataSource>InventSumBottom</DataSource>
+														<MenuItemName>WHSWarehouseTransactions</MenuItemName>
+														<MultiSelect>No</MultiSelect>
+														<NeedsRecord>Yes</NeedsRecord>
+														<SaveRecord>No</SaveRecord>
+													</AxFormControl>
+													<AxFormControl xmlns=""
+														i:type="AxFormButtonControl">
+														<Name>btnQuarantine</Name>
+														<AutoDeclaration>Yes</AutoDeclaration>
+														<ElementPosition>1610612733</ElementPosition>
+														<FilterExpression>%1</FilterExpression>
+														<HeightMode>Auto</HeightMode>
+														<Type>Button</Type>
+														<VerticalSpacing>-1</VerticalSpacing>
+														<WidthMode>Auto</WidthMode>
+														<FormControlExtension
+															i:nil="true" />
+														<AutoRefreshData>Yes</AutoRefreshData>
+														<ButtonDisplay>TextOnly</ButtonDisplay>
+														<ShowShortCut>No</ShowShortCut>
+														<Text>@WAX:InventoryStatusChange</Text>
+													</AxFormControl>
+													<AxFormControl xmlns=""
+														i:type="AxFormMenuFunctionButtonControl">
+														<Name>DimensionsDisplay</Name>
+														<ElementPosition>1879048189</ElementPosition>
+														<FilterExpression>%1</FilterExpression>
+														<HeightMode>Auto</HeightMode>
+														<Type>MenuFunctionButton</Type>
+														<VerticalSpacing>-1</VerticalSpacing>
+														<WidthMode>Auto</WidthMode>
+														<FormControlExtension
+															i:nil="true" />
+														<ButtonDisplay>TextOnly</ButtonDisplay>
+														<MenuItemName>InventDimParmFixed</MenuItemName>
+													</AxFormControl>
+												</Controls>
+												<ArrangeMethod>Vertical</ArrangeMethod>
+												<DataSource>InventSumBottom</DataSource>
+											</AxFormControl>
+										</Controls>
+										<AlignChild>No</AlignChild>
+										<AlignChildren>No</AlignChildren>
+										<ArrangeMethod>Vertical</ArrangeMethod>
+									</AxFormControl>
+								</Controls>
+								<AlignChild>No</AlignChild>
+								<AlignChildren>No</AlignChildren>
+								<ArrangeMethod>Vertical</ArrangeMethod>
+								<Style>Strip</Style>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormGroupControl">
+								<Name>OnHandFilterGroup</Name>
+								<Pattern>CustomFilters</Pattern>
+								<PatternVersion>1.1</PatternVersion>
+								<Type>Group</Type>
+								<WidthMode>SizeToAvailable</WidthMode>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl>
+										<Name>OnHandQuickFilterControl</Name>
+										<FormControlExtension>
+											<Name>QuickFilterControl</Name>
+											<ExtensionComponents />
+											<ExtensionProperties>
+												<AxFormControlExtensionProperty>
+													<Name>targetControlName</Name>
+													<Type>String</Type>
+													<Value>GridBottom</Value>
+												</AxFormControlExtensionProperty>
+												<AxFormControlExtensionProperty>
+													<Name>defaultColumnName</Name>
+													<Type>String</Type>
+												</AxFormControlExtensionProperty>
+												<AxFormControlExtensionProperty>
+													<Name>placeholderText</Name>
+													<Type>String</Type>
+												</AxFormControlExtensionProperty>
+											</ExtensionProperties>
+										</FormControlExtension>
+									</AxFormControl>
+								</Controls>
+								<ArrangeMethod>HorizontalLeft</ArrangeMethod>
+								<FrameType>None</FrameType>
+								<Style>CustomFilter</Style>
+								<ViewEditMode>Edit</ViewEditMode>
+							</AxFormControl>
+							<AxFormControl xmlns=""
+								i:type="AxFormGridControl">
+								<Name>GridBottom</Name>
+								<ElementPosition>1431655764</ElementPosition>
+								<FilterExpression>%1</FilterExpression>
+								<Type>Grid</Type>
+								<VerticalSpacing>-1</VerticalSpacing>
+								<FormControlExtension
+									i:nil="true" />
+								<Controls>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>InventSumBottom_ItemId</Name>
+										<ElementPosition>306783378</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataField>ItemId</DataField>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>InventSumBottom_ItemName</Name>
+										<ElementPosition>460175067</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>itemName</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>InventDimBottom_DisplayParentLP</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<ElementPosition>766958445</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>String</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>whsDisplayParentLP</DataMethod>
+										<DataSource>InventDimBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormGroupControl">
+										<Name>DisplayDims</Name>
+										<ElementPosition>1303829356</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>Group</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<Controls>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_configId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>configId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventSizeId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventSizeId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventColorId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventColorId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventStyleId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventStyleId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventVersionId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventVersionId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventSiteId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventSiteId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventLocationId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventLocationId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_inventBatchId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>inventBatchId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_wMSLocationId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>wMSLocationId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_inventSerialId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>inventSerialId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventStatusId</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventStatusId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_LicensePlateId</Name>
+												<AutoDeclaration>Yes</AutoDeclaration>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>LicensePlateId</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventOwnerId_RU</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventOwnerId_RU</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventProfileId_RU</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventProfileId_RU</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+											<AxFormControl xmlns=""
+												i:type="AxFormStringControl">
+												<Name>DisplayDims_InventGtdId_RU</Name>
+												<FilterExpression>%1</FilterExpression>
+												<HeightMode>Auto</HeightMode>
+												<Type>String</Type>
+												<VerticalSpacing>-1</VerticalSpacing>
+												<WidthMode>Auto</WidthMode>
+												<FormControlExtension
+													i:nil="true" />
+												<DataField>InventGtdId_RU</DataField>
+												<DataSource>InventDimBottom</DataSource>
+											</AxFormControl>
+										</Controls>
+										<BackgroundColor>WindowBackground</BackgroundColor>
+										<DataGroup>InventoryDimensions</DataGroup>
+										<DataSource>InventDimBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>InventSumBottom_PhysicalInvent</Name>
+										<ElementPosition>1585047452</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>Real</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>physicalInventCalculated</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+										<NoOfDecimals>-1</NoOfDecimals>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>InventSumBottom_PhysicalInventUnitID</Name>
+										<ConfigurationKey>WHSCatchWeight</ConfigurationKey>
+										<Type>String</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>inventUnitId</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>InventSumBottom_PdsCWPhysicalInvent</Name>
+										<ConfigurationKey>WHSCatchWeight</ConfigurationKey>
+										<Type>Real</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>pdsCWPhysicalInventCalculated</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>InventSumBottom_PdsCWPhysicalInventUnitID</Name>
+										<ConfigurationKey>WHSCatchWeight</ConfigurationKey>
+										<Type>String</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>pdsCWUnitId</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>WHSInventReserve_AvailPhysical</Name>
+										<ElementPosition>1866265548</ElementPosition>
+										<FilterExpression>%1</FilterExpression>
+										<HeightMode>Auto</HeightMode>
+										<Type>Real</Type>
+										<VerticalSpacing>-1</VerticalSpacing>
+										<WidthMode>Auto</WidthMode>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>availPhysical</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+										<NoOfDecimals>-1</NoOfDecimals>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WHSInventReserve_AvailPhysicalInventUnitId</Name>
+										<ConfigurationKey>WHSCatchWeight</ConfigurationKey>
+										<Type>String</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>inventUnitId</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>WHSInventReserve_PdsCWAvailPhysical</Name>
+										<ConfigurationKey>WHSCatchWeight</ConfigurationKey>
+										<Type>Real</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>cwAvailPhysical</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>WHSInventReserve_PdsCWAvailPhysicalUnitId</Name>
+										<ConfigurationKey>WHSCatchWeight</ConfigurationKey>
+										<Type>String</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>pdsCWUnitId</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>AvailPhysExactDimensions</Name>
+										<Type>Real</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>displayAvailPhysExactDims</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+										<Label>@WAX:AvailablePhysicalOnExactDimensions</Label>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>AvailPhysExactDimensionsUnitId</Name>
+										<ConfigurationKey>WHSCatchWeight</ConfigurationKey>
+										<Type>String</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>inventUnitId</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormRealControl">
+										<Name>PdsCWAvailPhysExactDimensions</Name>
+										<ConfigurationKey>WHSCatchWeight</ConfigurationKey>
+										<HelpText>@WAX:CWAvailablePhysicalOnExactDimensionsHelpText</HelpText>
+										<Type>Real</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>displayCWAvailPhysExactDims</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+										<Label>@WAX:CWAvailablePhysicalOnExactDimensions</Label>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormStringControl">
+										<Name>PdsCWAvailPhysExactDimensionsUnitId</Name>
+										<ConfigurationKey>WHSCatchWeight</ConfigurationKey>
+										<Type>String</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>pdsCWUnitId</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormImageControl">
+										<Name>InvalidDimensionsWarning</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<Height>14</Height>
+										<HeightMode>Auto</HeightMode>
+										<Type>Image</Type>
+										<Width>14</Width>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>displayInvalidDimensionWarning</DataMethod>
+										<DataSource>InventSumBottom</DataSource>
+										<Label>@SCM:WHSOnHand_InvalidDimensionsWarning</Label>
+										<ShowLabel>No</ShowLabel>
+									</AxFormControl>
+									<AxFormControl xmlns=""
+										i:type="AxFormIntegerControl">
+										<Name>WHSLocationLicensePlatePositioning_LicensePlatePosition</Name>
+										<AutoDeclaration>Yes</AutoDeclaration>
+										<HelpText>@WAX:WHSLocationLicensePlatePositionHelp_WHSOnHand</HelpText>
+										<Type>Integer</Type>
+										<FormControlExtension
+											i:nil="true" />
+										<DataMethod>displayLicensePlatePosition</DataMethod>
+										<DataSource>InventDimBottom</DataSource>
+									</AxFormControl>
+								</Controls>
+								<DataSource>InventSumBottom</DataSource>
+							</AxFormControl>
+						</Controls>
+						<Caption>@SYS115940</Caption>
+						<Scrollbars>Auto</Scrollbars>
+					</AxFormControl>
+				</Controls>
+				<AlignChild>No</AlignChild>
+				<ArrangeMethod>Vertical</ArrangeMethod>
+			</AxFormControl>
+		</Controls>
+	</Design>
+	<Parts />
+</AxForm>
